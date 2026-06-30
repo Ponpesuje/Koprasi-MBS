@@ -26,7 +26,7 @@ class ErrorBoundary extends React.Component {
   render() {
     if (this.state.hasError) {
       return (
-        <div className="min-h-screen bg-slate-900 flex items-center justify-center p-6">
+        <div translate="no" className="notranslate min-h-screen bg-slate-900 flex items-center justify-center p-6">
           <div className="bg-white p-6 rounded-3xl w-full max-w-md shadow-2xl text-center border-t-8 border-red-500">
              <h2 className="text-xl font-black text-slate-800 mb-2">Sistem Terkendala</h2>
              <p className="text-sm text-slate-500 mb-6 bg-slate-100 p-4 rounded-xl">{this.state.error?.message || "Terjadi kesalahan internal"}</p>
@@ -142,12 +142,12 @@ function MainApp() {
     setIsLoading(true);
     const ts = new Date().getTime(); // Tambahan Anti-Cache agar browser selalu mengambil data terbaru dari Google Sheet
     try {
-      const [uRes, lRes, tRes, aRes] = await Promise.all([
-        fetch(`${GAS_URL}?action=getUsers&t=${ts}`).then(r => r.json().catch(()=>[])),
-        fetch(`${GAS_URL}?action=getLoans&t=${ts}`).then(r => r.json().catch(()=>[])),
-        fetch(`${GAS_URL}?action=getTransactions&t=${ts}`).then(r => r.json().catch(()=>[])),
-        fetch(`${GAS_URL}?action=getAssets&t=${ts}`).then(r => r.json().catch(()=>[]))
-      ]);
+      // Mengambil data secara berurutan (sequential) untuk menghindari Apps Script nge-blank
+      const uRes = await fetch(`${GAS_URL}?action=getUsers&t=${ts}`).then(r => r.json().catch(()=>[]));
+      const lRes = await fetch(`${GAS_URL}?action=getLoans&t=${ts}`).then(r => r.json().catch(()=>[]));
+      const tRes = await fetch(`${GAS_URL}?action=getTransactions&t=${ts}`).then(r => r.json().catch(()=>[]));
+      const aRes = await fetch(`${GAS_URL}?action=getAssets&t=${ts}`).then(r => r.json().catch(()=>[]));
+      
       setUsers(Array.isArray(uRes) ? uRes : []); 
       setLoans(Array.isArray(lRes) ? lRes : []); 
       setTransactions(Array.isArray(tRes) ? tRes : []); 
@@ -227,7 +227,6 @@ function MainApp() {
     const expected = getExpectedSavingsMonths(user?.joinDate, targetYear);
     
     // PERBAIKAN UTAMA: Identifikasi tagihan menggunakan referenceId unik (SW-{userId}-...)
-    // Ini memastikan sistem tetap mendeteksi ceklis walaupun kolom type/userId di server tidak sinkron
     const userSavingsTrx = safeTransactions.filter(t => t.referenceId && t.referenceId.startsWith(`SW-${userId}-`));
     
     let paidCount = 0; let paidMonthsArray = new Array(12).fill(false);
@@ -270,7 +269,6 @@ function MainApp() {
 
       try {
         await gasFetch('addTransaction', newTrx);
-        // fetchData(); dihapus. Biarkan optimistic update bekerja karena Sheet butuh jeda waktu untuk menyimpan.
       } catch (err) { 
         setTransactions(prev => prev.filter(t => t.id !== newTrx.id)); // Rollback jika error
         showAlert("Gagal menyimpan ceklis ke server."); 
@@ -284,7 +282,6 @@ function MainApp() {
            setTransactions(prev => prev.filter(t => t.id !== trxToDelete.id));
            try {
              await gasFetch('deleteTransaction', { id: trxToDelete.id });
-             // fetchData(); dihapus agar state optimistic bertahan
            } catch (err) { 
              setTransactions(prev => [...prev, trxToDelete]); // Rollback centang jika gagal
              showAlert("Gagal membatalkan ceklis."); 
@@ -602,7 +599,7 @@ function MainApp() {
   };
 
   if (!currentUser) return (
-      <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4 relative">
+      <div translate="no" className="notranslate min-h-screen bg-slate-100 flex items-center justify-center p-4 relative">
         <form onSubmit={handleLogin} className="bg-white p-10 rounded-2xl shadow-xl max-w-sm w-full border-t-8 border-emerald-600 mx-4 relative z-10">
           <ShieldCheck className="w-16 h-16 text-emerald-600 mx-auto mb-4" />
           <h2 className="text-2xl font-black text-center text-slate-800 mb-6">Sistem Koperasi</h2>
@@ -630,7 +627,7 @@ function MainApp() {
     const loanRef = safeLoans.find(l => l.id === printInvoice.referenceId);
     const memberRef = safeUsers.find(u => u.id === printInvoice.userId);
     return (
-      <div className="p-8 max-w-md mx-auto bg-white min-h-screen">
+      <div translate="no" className="notranslate p-8 max-w-md mx-auto bg-white min-h-screen">
         <div className="text-center mb-6 border-b-2 border-dashed border-slate-400 pb-4">
           <ShieldCheck className="w-12 h-12 text-emerald-600 mx-auto mb-2 no-print" />
           <h1 className="text-2xl font-bold">Koperasi MBS</h1>
@@ -655,7 +652,7 @@ function MainApp() {
   }
 
   return (
-    <div className="min-h-screen flex bg-slate-50 flex-col md:flex-row relative overflow-hidden">
+    <div translate="no" className="notranslate min-h-screen flex bg-slate-50 flex-col md:flex-row relative overflow-hidden">
       
       {isMobileMenuOpen && (
         <div className="fixed inset-0 bg-slate-900/50 z-40 md:hidden" onClick={() => setIsMobileMenuOpen(false)}></div>
@@ -1502,4 +1499,4 @@ export default function App() {
         <MainApp />
      </ErrorBoundary>
   );
-}
+                                   }
