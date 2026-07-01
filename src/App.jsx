@@ -280,8 +280,21 @@ function MainApp() {
     setIsLoading(false);
   };
 
-  const handlePaySavings = (savingsLoan, amountToPay) => {
-    const memberName = safeUsers.find(u=>u.id===savingsLoan.userId)?.name;
+  const handlePaySavings = (ledger, amountToPay) => {
+    const savingsLoan = ledger.savingsLoan;
+    const memberName = ledger.user.name;
+    
+    // Menghitung bulan apa saja yang dibayar secara akurat untuk dicetak di struk nota
+    const monthsPaidCount = Math.floor((savingsLoan.paidAmount || 0) / SIMPANAN_WAJIB_PER_BULAN);
+    const numberOfMonthsPaying = Math.ceil(amountToPay / SIMPANAN_WAJIB_PER_BULAN); 
+    const monthNames = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
+    let paidMonths = [];
+    for(let i = 0; i < numberOfMonthsPaying; i++) {
+       let mIndex = ledger.expected.start + monthsPaidCount + i;
+       if(mIndex <= 11) paidMonths.push(monthNames[mIndex]);
+    }
+    const printNotesInfo = paidMonths.length > 0 ? `Pembayaran Bulan: ${paidMonths.join(', ')}` : '';
+
     showConfirm(`Terima setoran simpanan sebesar ${formatRp(amountToPay)} dari ${memberName}?`, async () => {
         setIsLoading(true);
         const newRemaining = savingsLoan.remainingAmount - amountToPay;
@@ -294,7 +307,8 @@ function MainApp() {
         
         const newTrx = {
             id: generateId('INV'), date: new Date().toISOString().split('T')[0], type: 'Simpanan Wajib',
-            amount: amountToPay, referenceId: savingsLoan.id, userId: savingsLoan.userId, adminId: currentUser.id
+            amount: amountToPay, referenceId: savingsLoan.id, userId: savingsLoan.userId, adminId: currentUser.id,
+            printNotes: printNotesInfo // Tambahan keterangan bulan khusus untuk dicetak
         };
 
         // Optimistic Updates
@@ -628,6 +642,12 @@ function MainApp() {
           <div className="flex justify-between border-b pb-2"><span>Tanggal:</span> <b>{printInvoice.date}</b></div>
           <div className="flex justify-between border-b pb-2"><span>Terima Dari:</span> <b>{memberRef?.name || 'Umum'}</b></div>
           <div className="flex justify-between border-b pb-2"><span>ID Referensi:</span> <b>{printInvoice.referenceId}</b></div>
+          
+          {/* Menampilkan Bulan yang Dibayar pada Struk */}
+          {printInvoice.printNotes && (
+             <div className="flex justify-between border-b pb-2"><span>Keterangan:</span> <b className="text-right text-emerald-600 max-w-[200px]">{printInvoice.printNotes}</b></div>
+          )}
+
           <div className="flex justify-between text-xl mt-6 pt-4 border-t-2 border-slate-800">
             <span className="font-bold">Total Diterima:</span> <b className="text-emerald-700">{formatRp(printInvoice.amount)}</b>
           </div>
@@ -803,8 +823,8 @@ function MainApp() {
                             const unpaidNames = getUnpaidMonthsNames(ledger);
                             
                             const waMessage = arrears > 0 
-                              ? encodeURIComponent(`Halo ${user.name},\n\nMengingatkan bahwa Anda memiliki tunggakan Simpanan Wajib (Koperasi MBS) berjalan sebesar *${formatRp(arrears)}*.\n\nBulan tertunggak:\n- ${unpaidNames.join('\n- ')}\n\nMohon untuk segera melakukan pembayaran. Terima kasih.`)
-                              : encodeURIComponent(`Halo ${user.name},\n\nTerima kasih banyak! Pembayaran Simpanan Wajib Anda telah kami terima. Saat ini Anda *Bebas Tunggakan*.\n\nSemoga berkah selalu.`);
+                              ? encodeURIComponent(`Halo ${user.name},\n\nMengingatkan bahwa Anda memiliki tunggakan Simpanan Wajib di Koperasi Mitra Baraya Sejahtera MAN 3 Bogor sebesar *${formatRp(arrears)}*.\n\nBulan tertunggak:\n- ${unpaidNames.join('\n- ')}\n\nMohon untuk segera melakukan pembayaran. Terima kasih.\n\nTertanda Admin`)
+                              : encodeURIComponent(`Halo ${user.name},\n\nTerima kasih banyak! Pembayaran Simpanan Wajib Anda di Koperasi Mitra Baraya Sejahtera MAN 3 Bogor telah kami terima. Saat ini Anda *Bebas Tunggakan*.\n\nSemoga berkah selalu.\n\nTertanda Admin`);
 
                             return (
                                <tr key={user.id} className="hover:bg-slate-50">
@@ -992,7 +1012,7 @@ function MainApp() {
                                     {loan.status === 'Aktif' ? (
                                       <>
                                         {safeUsers.find(u => u.id == loan.userId)?.phone && (
-                                          <a href={`https://wa.me/${safeUsers.find(u => u.id == loan.userId).phone}?text=${encodeURIComponent(`Halo ${safeUsers.find(u => u.id == loan.userId).name},\n\nMengingatkan untuk tagihan cicilan Akad Koperasi Anda (Ref: ${loan.id}) bulan ini sebesar *${formatRp(loan.installment)}*.\n\nSisa tagihan berjalan: ${formatRp(loan.remainingAmount)}.\n\nMohon segera melakukan pembayaran ke bendahara. Terima kasih.`)}`} target="_blank" rel="noopener noreferrer" className="bg-green-500 text-white px-3 py-2 rounded-lg text-xs font-bold hover:bg-green-600 mb-2 md:mb-0 w-full md:w-auto flex items-center justify-center gap-1"><MessageCircle className="w-3 h-3"/> Tagih WA</a>
+                                          <a href={`https://wa.me/${safeUsers.find(u => u.id == loan.userId).phone}?text=${encodeURIComponent(`Halo ${safeUsers.find(u => u.id == loan.userId).name},\n\nMengingatkan untuk tagihan cicilan Akad (Ref: ${loan.id}) di Koperasi Mitra Baraya Sejahtera MAN 3 Bogor bulan ini sebesar *${formatRp(loan.installment)}*.\n\nSisa tagihan berjalan: ${formatRp(loan.remainingAmount)}.\n\nMohon segera melakukan pembayaran ke bendahara. Terima kasih.\n\nTertanda Admin`)}`} target="_blank" rel="noopener noreferrer" className="bg-green-500 text-white px-3 py-2 rounded-lg text-xs font-bold hover:bg-green-600 mb-2 md:mb-0 w-full md:w-auto flex items-center justify-center gap-1"><MessageCircle className="w-3 h-3"/> Tagih WA</a>
                                         )}
                                         <button onClick={() => handlePayInstallment(loan)} className="bg-slate-900 text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-slate-800 mb-2 md:mb-0 w-full md:w-auto whitespace-nowrap">Terima Cicilan</button>
                                       </>
@@ -1365,10 +1385,10 @@ function MainApp() {
 
                           {loan.remainingAmount > 0 ? (
                               <div className="space-y-3 pt-4 border-t border-slate-100">
-                                  <button onClick={() => handlePaySavings(loan, SIMPANAN_WAJIB_PER_BULAN)} className="w-full bg-slate-900 text-white font-bold py-4 rounded-xl hover:bg-slate-800 shadow-lg transition flex items-center justify-center gap-2">
+                                  <button onClick={() => handlePaySavings(ledger, SIMPANAN_WAJIB_PER_BULAN)} className="w-full bg-slate-900 text-white font-bold py-4 rounded-xl hover:bg-slate-800 shadow-lg transition flex items-center justify-center gap-2">
                                       Terima 1 Bulan ({formatRp(SIMPANAN_WAJIB_PER_BULAN)})
                                   </button>
-                                  <button onClick={() => handlePaySavings(loan, loan.remainingAmount)} className="w-full bg-emerald-600 text-white font-bold py-4 rounded-xl hover:bg-emerald-700 shadow-md transition flex items-center justify-center gap-2">
+                                  <button onClick={() => handlePaySavings(ledger, loan.remainingAmount)} className="w-full bg-emerald-600 text-white font-bold py-4 rounded-xl hover:bg-emerald-700 shadow-md transition flex items-center justify-center gap-2">
                                       Lunasi Semua ({formatRp(loan.remainingAmount)})
                                   </button>
                               </div>
