@@ -651,8 +651,7 @@ function MainApp() {
     const oldPassword = form.oldPassword.value;
     const newPassword = form.newPassword.value;
 
-    // Tambahkan konversi String() agar Angka '123456' dari Spreadsheet terbaca sama dengan Teks inputan
-    if (oldPassword !== String(currentUser.password)) {
+    if (oldPassword !== currentUser.password) {
       showAlert('Sandi saat ini salah!');
       return;
     }
