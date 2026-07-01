@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   LayoutDashboard, Users, Wallet, LogOut, Plus, ShieldCheck, Printer, 
   CheckCircle, Clock, AlertCircle, TrendingUp, Settings, Key, BookOpen, 
-  Scale, FileText, Box, Edit, Trash2, X, PiggyBank, MessageCircle, Menu
+  Scale, FileText, Box, Edit, Trash2, X, PiggyBank, MessageCircle, Menu, Gift
 } from 'lucide-react';
 
 const GAS_URL = 'https://script.google.com/macros/s/AKfycbwgNbXLkv-PPJT7RxqNAoyJAsyi2zFdw9EYYpCNkF9-vy61W1KYW6YBEnifW6fL0Snp/exec'; 
@@ -47,6 +47,7 @@ function MainApp() {
   const [currentView, setCurrentView] = useState('dashboard'); 
   const [accountingTab, setAccountingTab] = useState('jurnal'); 
   const [savingsYear, setSavingsYear] = useState(new Date().getFullYear()); 
+  const [shuPercentage, setShuPercentage] = useState(50); // Persentase Default Pembagian SHU
   const [isLoading, setIsLoading] = useState(false);
   const [printInvoice, setPrintInvoice] = useState(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -590,6 +591,27 @@ function MainApp() {
     setIsLoading(false);
   };
 
+  const handleDistributeSHU = (shuTotal) => {
+    if (shuTotal <= 0) {
+        showAlert("Tidak ada dana SHU yang bisa dibagikan (Laba bersih tidak mencukupi atau Rp 0)."); return;
+    }
+    showConfirm(`Yakin mengeksekusi pencairan SHU sebesar ${formatRp(shuTotal)} untuk seluruh anggota?\n\nUang Kas Koperasi Anda akan otomatis terpotong secara sistem.`, async () => {
+        setIsLoading(true);
+        const newTrx = {
+            id: generateId('OUT'), date: new Date().toISOString().split('T')[0], type: 'Pembagian SHU', 
+            amount: shuTotal, referenceId: `Eksekusi SHU ${new Date().getFullYear()}`, userId: 'Internal', adminId: currentUser.id
+        };
+        try {
+            await gasFetch('addTransaction', newTrx);
+            showAlert("Pembagian SHU berhasil dieksekusi! Uang Kas telah dipotong otomatis.");
+            fetchData();
+        } catch(e) {
+            showAlert("Gagal mencatat pembagian SHU ke server.");
+        }
+        setIsLoading(false);
+    });
+  };
+
   const handleResetPassword = () => { showAlert('Silakan ganti di menu Pengaturan Akun.'); };
   const handleToggleMember = () => { showAlert('Fungsi ubah status disimulasikan.'); };
   const handleChangePassword = (e) => { e.preventDefault(); showAlert('Fungsi ubah password disimulasikan.'); };
@@ -608,11 +630,9 @@ function MainApp() {
           <h2 className="text-2xl font-black text-center text-slate-800 mb-6">Sistem Koperasi</h2>
           <input name="username" placeholder="Username / ID" required className="w-full mb-4 px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500" />
           <input name="password" type="password" placeholder="Password" required className="w-full mb-6 px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500" />
-          <button type="submit" disabled={isLoading} className="w-full bg-emerald-600 text-white py-3 rounded-lg font-bold text-lg hover:bg-emerald-700 transition">
-              {isLoading ? 'Menghubungkan...' : 'Masuk'}
-          </button>
+          <button type="submit" disabled={isLoading} className="w-full bg-emerald-600 text-white py-3 rounded-lg font-bold text-lg hover:bg-emerald-700 transition">Masuk</button>
           <div className="text-center mt-6 pt-4 border-t border-slate-100">
-            <p className="text-xs text-slate-400 font-bold">&copy; {new Date().getFullYear()} Permana Corp.</p>
+            <p className="text-xs text-slate-400 font-bold">&copy; {new Date().getFullYear()} Copyright By Permana Corp.</p>
           </div>
         </form>
         {modal.isOpen && (
@@ -691,6 +711,7 @@ function MainApp() {
                
                <p className="text-[10px] font-bold text-slate-500 uppercase px-4 mt-6 mb-2">Keuangan & Laporan</p>
                <button onClick={() => navigate('accounting')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition ${currentView === 'accounting' ? 'bg-emerald-600 text-white' : 'hover:bg-slate-800'}`}><BookOpen className="w-5 h-5"/> Laporan Keuangan</button>
+               <button onClick={() => navigate('shu')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition ${currentView === 'shu' ? 'bg-emerald-600 text-white' : 'hover:bg-slate-800'}`}><Gift className="w-5 h-5"/> Pembagian SHU</button>
              </>
           )}
           
@@ -704,6 +725,7 @@ function MainApp() {
             <div className="overflow-hidden"><p className="text-white text-sm font-bold truncate">{currentUser.name}</p><p className="text-xs text-slate-500 capitalize">{currentUser.role}</p></div>
           </div>
           <button onClick={handleLogout} className="w-full py-2 bg-slate-800 hover:bg-red-900/50 hover:text-red-400 text-slate-400 text-sm font-bold flex items-center justify-center gap-2 rounded-lg transition"><LogOut className="w-4 h-4"/> Logout</button>
+          <p className="text-center text-[10px] text-slate-600 font-bold mt-2">&copy; {new Date().getFullYear()} Copyright By Permana Corp.</p>
         </div>
       </aside>
 
@@ -720,6 +742,7 @@ function MainApp() {
                {currentView === 'loans' && 'Manajemen & Analisis Akad'}
                {currentView === 'assets' && 'Inventaris & Aset Koperasi'}
                {currentView === 'accounting' && 'Akuntansi & Laporan Keuangan'}
+               {currentView === 'shu' && 'Manajemen Sisa Hasil Usaha'}
                {currentView === 'settings' && 'Pengaturan Akun'}
              </h2>
           </div>
@@ -1037,7 +1060,8 @@ function MainApp() {
             {currentView === 'accounting' && currentUser.role === 'admin' && (
               <div className="space-y-6">
                  <div className="flex flex-col md:flex-row gap-2 no-print bg-white p-2 md:p-4 rounded-xl shadow-sm border border-slate-200">
-                    <button onClick={()=>setAccountingTab('jurnal')} className={`flex-1 py-3 px-4 rounded-lg font-bold text-xs md:text-sm flex justify-center items-center gap-2 transition ${accountingTab==='jurnal'?'bg-slate-900 text-white shadow-md':'text-slate-500 hover:bg-slate-50 border border-slate-100'}`}><BookOpen className="w-4 h-4 hidden sm:block"/> Buku Kas</button>
+                    <button onClick={()=>setAccountingTab('jurnal')} className={`flex-1 py-3 px-4 rounded-lg font-bold text-xs md:text-sm flex justify-center items-center gap-2 transition ${accountingTab==='jurnal'?'bg-slate-900 text-white shadow-md':'text-slate-500 hover:bg-slate-50 border border-slate-100'}`}><BookOpen className="w-4 h-4 hidden sm:block"/> Jurnal Umum</button>
+                    <button onClick={()=>setAccountingTab('bukukas')} className={`flex-1 py-3 px-4 rounded-lg font-bold text-xs md:text-sm flex justify-center items-center gap-2 transition ${accountingTab==='bukukas'?'bg-slate-900 text-white shadow-md':'text-slate-500 hover:bg-slate-50 border border-slate-100'}`}><Wallet className="w-4 h-4 hidden sm:block"/> Buku Kas</button>
                     <button onClick={()=>setAccountingTab('labarugi')} className={`flex-1 py-3 px-4 rounded-lg font-bold text-xs md:text-sm flex justify-center items-center gap-2 transition ${accountingTab==='labarugi'?'bg-slate-900 text-white shadow-md':'text-slate-500 hover:bg-slate-50 border border-slate-100'}`}><TrendingUp className="w-4 h-4 hidden sm:block"/> Laba Rugi</button>
                     <button onClick={()=>setAccountingTab('neraca')} className={`flex-1 py-3 px-4 rounded-lg font-bold text-xs md:text-sm flex justify-center items-center gap-2 transition ${accountingTab==='neraca'?'bg-slate-900 text-white shadow-md':'text-slate-500 hover:bg-slate-50 border border-slate-100'}`}><Scale className="w-4 h-4 hidden sm:block"/> Neraca</button>
                     <button onClick={()=>setAccountingTab('calk')} className={`flex-1 py-3 px-4 rounded-lg font-bold text-xs md:text-sm flex justify-center items-center gap-2 transition ${accountingTab==='calk'?'bg-slate-900 text-white shadow-md':'text-slate-500 hover:bg-slate-50 border border-slate-100'}`}><FileText className="w-4 h-4 hidden sm:block"/> C.A.L.K</button>
@@ -1061,12 +1085,49 @@ function MainApp() {
 
                     {accountingTab === 'jurnal' && (
                        <div>
-                          <h2 className="text-xl md:text-2xl font-black mb-1">Buku Kas (Jurnal Umum)</h2>
-                          <p className="text-slate-500 text-xs md:text-sm mb-6">Mencatat seluruh arus kas masuk (Debit) dan keluar (Kredit).</p>
+                          <h2 className="text-xl md:text-2xl font-black mb-1">Jurnal Umum</h2>
+                          <p className="text-slate-500 text-xs md:text-sm mb-6">Pencatatan kronologis seluruh transaksi (Debit & Kredit).</p>
                           <div className="overflow-x-auto w-full">
                               <table className="w-full text-left text-xs md:text-sm border-collapse border border-slate-300 min-w-[700px]">
                                  <thead>
-                                   <tr className="bg-slate-100 text-slate-700"><th className="p-3 border border-slate-300 w-24">Tanggal</th><th className="p-3 border border-slate-300">Keterangan Jurnal</th><th className="p-3 border border-slate-300 text-right w-32 bg-emerald-50">Debit (Masuk)</th><th className="p-3 border border-slate-300 text-right w-32 bg-red-50">Kredit (Keluar)</th><th className="p-3 border border-slate-300 text-right w-36 bg-blue-50">Saldo Akhir</th></tr>
+                                   <tr className="bg-slate-100 text-slate-700"><th className="p-3 border border-slate-300 w-24">Tanggal</th><th className="p-3 border border-slate-300">Keterangan Jurnal</th><th className="p-3 border border-slate-300 text-right w-32 bg-emerald-50">Debit</th><th className="p-3 border border-slate-300 text-right w-32 bg-red-50">Kredit</th></tr>
+                                 </thead>
+                                 <tbody>
+                                   {calcTransactions.length === 0 && <tr><td colSpan="4" className="p-6 text-center text-slate-400 font-medium">Belum ada transaksi tercatat.</td></tr>}
+                                   {calcTransactions.map(trx => {
+                                     const usr = safeUsers.find(u => u.id === trx.userId);
+                                     return(
+                                     <tr key={trx.id} className="hover:bg-slate-50">
+                                       <td className="p-3 border border-slate-300 text-[10px] md:text-xs font-mono whitespace-nowrap">{trx.date}</td>
+                                       <td className="p-3 border border-slate-300">
+                                          <p className="font-bold">{trx.type}</p>
+                                          <p className="text-[10px] md:text-xs text-slate-500">Ref: {trx.referenceId} {usr ? `(${usr.name})` : ''}</p>
+                                       </td>
+                                       <td className="p-3 border border-slate-300 text-right font-medium text-emerald-700">{trx.isIncome ? formatRp(trx.amount) : '-'}</td>
+                                       <td className="p-3 border border-slate-300 text-right font-medium text-red-600">{!trx.isIncome ? formatRp(trx.amount) : '-'}</td>
+                                     </tr>
+                                   )})}
+                                 </tbody>
+                                 <tfoot>
+                                    <tr className="bg-slate-900 text-white font-black text-sm md:text-base">
+                                       <td colSpan="2" className="p-4 text-right border border-slate-800">TOTAL TRANSAKSI:</td>
+                                       <td className="p-4 text-right border border-slate-800 text-emerald-400">{formatRp(calcTransactions.filter(t=>t.isIncome).reduce((sum,t)=>sum+t.amount,0))}</td>
+                                       <td className="p-4 text-right border border-slate-800 text-red-400">{formatRp(calcTransactions.filter(t=>!t.isIncome).reduce((sum,t)=>sum+t.amount,0))}</td>
+                                    </tr>
+                                 </tfoot>
+                              </table>
+                          </div>
+                       </div>
+                    )}
+
+                    {accountingTab === 'bukukas' && (
+                       <div>
+                          <h2 className="text-xl md:text-2xl font-black mb-1">Buku Kas Berjalan</h2>
+                          <p className="text-slate-500 text-xs md:text-sm mb-6">Mencatat seluruh arus kas masuk (Masuk), keluar (Keluar), beserta riwayat saldo akhir.</p>
+                          <div className="overflow-x-auto w-full">
+                              <table className="w-full text-left text-xs md:text-sm border-collapse border border-slate-300 min-w-[700px]">
+                                 <thead>
+                                   <tr className="bg-slate-100 text-slate-700"><th className="p-3 border border-slate-300 w-24">Tanggal</th><th className="p-3 border border-slate-300">Keterangan Arus Kas</th><th className="p-3 border border-slate-300 text-right w-32 bg-emerald-50">Masuk</th><th className="p-3 border border-slate-300 text-right w-32 bg-red-50">Keluar</th><th className="p-3 border border-slate-300 text-right w-36 bg-blue-50">Saldo Akhir</th></tr>
                                  </thead>
                                  <tbody>
                                    {calcTransactions.length === 0 && <tr><td colSpan="5" className="p-6 text-center text-slate-400 font-medium">Belum ada transaksi tercatat.</td></tr>}
@@ -1148,7 +1209,7 @@ function MainApp() {
                        <div className="max-w-4xl mx-auto space-y-6">
                           <h2 className="text-xl md:text-2xl font-black mb-1 text-center">Catatan Atas Laporan Keuangan</h2>
                           <div className="border-t-2 border-slate-200 pt-6 space-y-6 text-justify">
-                             <div><h3 className="font-bold text-base md:text-lg mb-2">1. Kebijakan Akuntansi Kas</h3><p className="text-xs md:text-sm leading-relaxed text-slate-700">Sistem ini mengakui transaksi penerimaan angsuran, simpanan, pendapatan usaha sebagai DEBIT (Kas Bertambah), dan transaksi pencairan akad, biaya operasional sebagai KREDIT (Kas Berkurang).</p></div>
+                             <div><h3 className="font-bold text-base md:text-lg mb-2">1. Kebijakan Akuntansi Kas</h3><p className="text-xs md:text-sm leading-relaxed text-slate-700">Sistem ini mengakui transaksi penerimaan angsuran, simpanan, pendapatan usaha sebagai DEBIT (Kas Bertambah), dan transaksi pencairan akad, biaya operasional serta pembagian SHU sebagai KREDIT (Kas Berkurang).</p></div>
                              <div><h3 className="font-bold text-base md:text-lg mb-2">2. Rekonsiliasi Piutang</h3><p className="text-xs md:text-sm leading-relaxed text-slate-700">Total piutang ditarik secara *real-time* dari sisa tagihan anggota pada akad aktif. Ketika dicairkan, kas akan terpotong secara otomatis oleh sistem.</p></div>
                              <div className="mt-16 pt-16 grid grid-cols-2 text-center text-xs md:text-sm font-bold">
                                <div><p className="mb-16">Mengetahui,</p><p className="underline decoration-2 underline-offset-4">Ketua Koperasi</p></div>
@@ -1161,6 +1222,85 @@ function MainApp() {
               </div>
             )}
 
+            {currentView === 'shu' && currentUser.role === 'admin' && (
+              <div className="space-y-6">
+                 <div className="bg-white p-6 md:p-8 rounded-3xl shadow-sm border border-slate-200">
+                    <h2 className="text-xl font-black text-slate-800 mb-6 flex items-center gap-2"><Gift className="w-6 h-6 text-purple-600"/> Kalkulator & Eksekusi Pembagian SHU</h2>
+                    
+                    {(() => {
+                       const labaBersih = totalPendapatanUsaha - totalBebanOperasional;
+                       const activeMembers = safeUsers.filter(u => u.role === 'member' && u.status === 'Aktif');
+                       const totalShuToDistribute = labaBersih > 0 ? (labaBersih * shuPercentage) / 100 : 0;
+                       const shuPerMember = activeMembers.length > 0 ? totalShuToDistribute / activeMembers.length : 0;
+                       
+                       return (
+                         <div>
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                               <div className="p-6 bg-slate-50 border border-slate-200 rounded-2xl">
+                                  <p className="text-xs font-bold text-slate-500 uppercase mb-2">Total Laba Bersih (Berjalan)</p>
+                                  <p className={`text-3xl font-black ${labaBersih > 0 ? 'text-emerald-600' : 'text-red-600'}`}>{formatRp(labaBersih)}</p>
+                               </div>
+                               <div className="p-6 bg-purple-50 border border-purple-200 rounded-2xl">
+                                  <p className="text-xs font-bold text-purple-700 uppercase mb-2">Persentase SHU Anggota (%)</p>
+                                  <input type="number" min="0" max="100" value={shuPercentage} onChange={(e) => setShuPercentage(Number(e.target.value))} className="w-full bg-white border-2 border-purple-300 p-2 rounded-xl outline-none font-black text-2xl text-purple-800" />
+                               </div>
+                               <div className="p-6 bg-emerald-50 border border-emerald-200 rounded-2xl">
+                                  <p className="text-xs font-bold text-emerald-700 uppercase mb-2">Total Dana Cair SHU Anggota</p>
+                                  <p className="text-3xl font-black text-emerald-700">{formatRp(totalShuToDistribute)}</p>
+                               </div>
+                            </div>
+
+                            <div className="bg-slate-900 rounded-2xl p-6 md:p-8 text-white flex flex-col md:flex-row justify-between items-center gap-6 shadow-lg relative overflow-hidden">
+                               <div className="z-10 text-center md:text-left">
+                                  <p className="text-slate-400 font-bold uppercase text-xs tracking-wider mb-2">Estimasi SHU Per Anggota Aktif ({activeMembers.length} Orang)</p>
+                                  <p className="text-4xl md:text-5xl font-black text-amber-400">{formatRp(shuPerMember)}</p>
+                                  <p className="text-xs text-slate-300 mt-2">Nominal ini akan disebarkan merata ke seluruh anggota yang berstatus Aktif.</p>
+                               </div>
+                               <button onClick={() => handleDistributeSHU(totalShuToDistribute)} className="z-10 w-full md:w-auto bg-amber-500 hover:bg-amber-600 text-slate-900 font-black px-8 py-4 rounded-xl shadow-xl transition transform hover:scale-105 flex items-center justify-center gap-2">
+                                  💸 Eksekusi Cairkan SHU
+                               </button>
+                               <Gift className="w-48 h-48 text-slate-800 opacity-50 absolute -right-10 -bottom-10 z-0" />
+                            </div>
+
+                            <div className="mt-8">
+                               <h3 className="font-bold text-slate-800 text-lg mb-4">Informasikan SHU ke Anggota</h3>
+                               <div className="overflow-x-auto w-full border border-slate-200 rounded-xl">
+                                  <table className="w-full text-left text-sm whitespace-nowrap min-w-[600px]">
+                                     <thead className="bg-slate-50 text-slate-500 text-xs uppercase border-b border-slate-200">
+                                        <tr><th className="p-4 font-bold">Nama Anggota Aktif</th><th className="p-4 font-bold text-right">Nominal Diterima</th><th className="p-4 font-bold text-center">Tindakan WA</th></tr>
+                                     </thead>
+                                     <tbody className="divide-y divide-slate-100">
+                                        {activeMembers.length === 0 && <tr><td colSpan="3" className="p-6 text-center text-slate-400">Belum ada anggota aktif.</td></tr>}
+                                        {activeMembers.map(user => {
+                                           const waMessage = encodeURIComponent(`Halo ${user.name},\n\nKoperasi Mitra Baraya Sejahtera MAN 3 Bogor menginformasikan bahwa pembagian SHU (Sisa Hasil Usaha) periode ini telah disiapkan.\n\nBerdasarkan perhitungan Laba Bersih, Anda berhak menerima SHU sebesar *${formatRp(shuPerMember)}*.\n\nTerima kasih atas partisipasi aktif Anda dalam memajukan koperasi kita.\n\nTertanda Admin`);
+                                           return (
+                                              <tr key={user.id} className="hover:bg-slate-50">
+                                                 <td className="p-4 font-bold text-slate-800">{user.name}</td>
+                                                 <td className="p-4 text-right font-black text-amber-600">{formatRp(shuPerMember)}</td>
+                                                 <td className="p-4 text-center">
+                                                    {user.phone ? (
+                                                       <a href={`https://wa.me/${user.phone}?text=${waMessage}`} target="_blank" rel="noopener noreferrer" className="mx-auto w-fit flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-600 text-white py-2 px-4 rounded-lg transition font-bold shadow-sm">
+                                                          <MessageCircle className="w-4 h-4"/> Kabari via WA
+                                                       </a>
+                                                    ) : (
+                                                       <span className="text-xs text-slate-400 italic">No WA tidak ada</span>
+                                                    )}
+                                                 </td>
+                                              </tr>
+                                           )
+                                        })}
+                                     </tbody>
+                                  </table>
+                               </div>
+                            </div>
+                         </div>
+                       );
+                    })()}
+                 </div>
+              </div>
+            )}
+
+            {/* MEMBER DASHBOARD */}
             {currentView === 'dashboard' && currentUser.role === 'member' && (
               <div className="space-y-6 md:space-y-8">
                 {(() => {
