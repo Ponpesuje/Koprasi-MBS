@@ -612,9 +612,70 @@ function MainApp() {
     });
   };
 
-  const handleResetPassword = () => { showAlert('Silakan ganti di menu Pengaturan Akun.'); };
-  const handleToggleMember = () => { showAlert('Fungsi ubah status disimulasikan.'); };
-  const handleChangePassword = (e) => { e.preventDefault(); showAlert('Fungsi ubah password disimulasikan.'); };
+  const handleResetPassword = (userToReset) => {
+    showConfirm(`Yakin mereset sandi untuk ${userToReset.name} menjadi "123456"?`, async () => {
+       setIsLoading(true);
+       const updatedUser = { ...userToReset, password: '123456' };
+       try {
+          await gasFetch('updateUser', updatedUser);
+          setUsers(prev => prev.map(u => u.id === updatedUser.id ? updatedUser : u));
+          showAlert(`Sandi ${userToReset.name} berhasil direset ke "123456".`);
+       } catch(err) {
+          showAlert("Gagal mereset sandi.");
+       }
+       setIsLoading(false);
+    });
+  };
+
+  const handleToggleMember = (userToToggle) => {
+     const newStatus = userToToggle.status === 'Aktif' ? 'Nonaktif' : 'Aktif';
+     showConfirm(`Ubah status ${userToToggle.name} menjadi ${newStatus}?`, async () => {
+        setIsLoading(true);
+        const updatedUser = { ...userToToggle, status: newStatus };
+        try {
+          await gasFetch('updateUser', updatedUser);
+          setUsers(prev => prev.map(u => u.id === updatedUser.id ? updatedUser : u));
+          showAlert(`Status ${userToToggle.name} berhasil diubah menjadi ${newStatus}.`);
+        } catch(err) {
+          showAlert("Gagal mengubah status.");
+        }
+        setIsLoading(false);
+     });
+  };
+
+  const handleChangePassword = async (e) => { 
+    e.preventDefault(); 
+    const form = e.target;
+    const oldPassword = form.oldPassword.value;
+    const newPassword = form.newPassword.value;
+
+    if (oldPassword !== currentUser.password) {
+      showAlert('Sandi saat ini salah!');
+      return;
+    }
+    if (newPassword.length < 6) {
+      showAlert('Sandi baru minimal 6 karakter.');
+      return;
+    }
+
+    setIsLoading(true);
+    const updatedUser = { ...currentUser, password: newPassword };
+    try {
+      await gasFetch('updateUser', updatedUser);
+      
+      // Update session & state
+      setCurrentUser(updatedUser);
+      safeStorage.set('ksp_user', JSON.stringify(updatedUser));
+      setUsers(prev => prev.map(u => u.id === updatedUser.id ? updatedUser : u));
+      
+      showAlert('Kata sandi berhasil diubah!');
+      form.reset();
+    } catch(err) {
+      showAlert('Gagal mengubah kata sandi. Pastikan server terhubung.');
+    }
+    setIsLoading(false);
+  };
+
   const handleSaveAsset = (e) => { e.preventDefault(); showAlert('Fungsi simpan aset disimulasikan.'); setShowAssetModal(false); };
   const handleDeleteAsset = () => { showAlert('Fungsi hapus aset disimulasikan.'); };
 
