@@ -5,7 +5,7 @@ import {
   Scale, FileText, Box, Edit, Trash2, X, PiggyBank, MessageCircle, Menu, Gift
 } from 'lucide-react';
 
-const GAS_URL = 'https://script.google.com/macros/s/AKfycbwgNbXLkv-PPJT7RxqNAoyJAsyi2zFdw9EYYpCNkF9-vy61W1KYW6YBEnifW6fL0Snp/exec'; 
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbx7jAhWTRP_9dMKYHe6exrNQ-jgeoJjAMcvJU27ORm7gmX48XxbW_QGc59EN3Yj6tU/exec'; 
 
 const formatRp = (num) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(num || 0);
 const generateId = (prefix) => `${prefix}-${Math.floor(1000 + Math.random() * 9000)}`;
@@ -651,7 +651,8 @@ function MainApp() {
     const oldPassword = form.oldPassword.value;
     const newPassword = form.newPassword.value;
 
-    if (oldPassword !== currentUser.password) {
+    // Menggunakan != (loose inequality) agar tipe data string "123456" dan angka 123456 dianggap sama
+    if (oldPassword != currentUser.password) {
       showAlert('Sandi saat ini salah!');
       return;
     }
