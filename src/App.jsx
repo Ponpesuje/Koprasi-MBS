@@ -5,14 +5,12 @@ import {
   Scale, FileText, Box, Edit, Trash2, X, PiggyBank, MessageCircle, Menu
 } from 'lucide-react';
 
-// GANTI URL DI BAWAH INI DENGAN URL WEB APP MILIK ANDA SENDIRI
 const GAS_URL = 'https://script.google.com/macros/s/AKfycbwgNbXLkv-PPJT7RxqNAoyJAsyi2zFdw9EYYpCNkF9-vy61W1KYW6YBEnifW6fL0Snp/exec'; 
 
 const formatRp = (num) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(num || 0);
 const generateId = (prefix) => `${prefix}-${Math.floor(1000 + Math.random() * 9000)}`;
 const SIMPANAN_WAJIB_PER_BULAN = 30000; 
 
-// Pelindung localStorage agar aplikasi tidak blank di browser HP yang ketat (seperti Xiaomi Browser)
 const safeStorage = {
   get: (key) => { try { return window.localStorage.getItem(key); } catch(e) { return null; } },
   set: (key, val) => { try { window.localStorage.setItem(key, val); } catch(e) {} },
@@ -53,6 +51,9 @@ function MainApp() {
   const [printInvoice, setPrintInvoice] = useState(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
+  // Modal Simpanan state
+  const [selectedSavingsUser, setSelectedSavingsUser] = useState(null);
+
   const [syariahForm, setSyariahForm] = useState({ itemName: '', itemPrice: 0, cashAmount: 0, tenor: 1, margin: 0, adminFee: 20000 });
   const [admSyariahForm, setAdmSyariahForm] = useState({ userId: '', itemName: '', itemPrice: 0, cashAmount: 0, tenor: 1, margin: 0, adminFee: 20000 });
   const [approveLoanData, setApproveLoanData] = useState(null);
@@ -64,14 +65,13 @@ function MainApp() {
   const [showTrxModal, setShowTrxModal] = useState(false);
   const [trxTypeSelect, setTrxTypeSelect] = useState('IN'); 
 
-  // CUSTOM MODAL STATE (Sangat Penting: Menggantikan alert, confirm, prompt bawaan browser)
   const [modal, setModal] = useState({ isOpen: false, type: 'alert', title: '', message: '', onConfirm: null, inputValue: '' });
 
   const showAlert = (message, title = 'Informasi') => setModal({ isOpen: true, type: 'alert', message, title, onConfirm: null, inputValue: '' });
   const showConfirm = (message, onConfirm, title = 'Konfirmasi') => setModal({ isOpen: true, type: 'confirm', message, title, onConfirm, inputValue: '' });
   const showPrompt = (message, defaultValue, onConfirm, title = 'Input Diperlukan') => setModal({ isOpen: true, type: 'prompt', message, title, inputValue: defaultValue, onConfirm });
 
-  const TIMEOUT_MS = 10 * 60 * 1000; // 10 Menit
+  const TIMEOUT_MS = 10 * 60 * 1000; 
 
   const handleLogout = () => {
     setCurrentUser(null);
@@ -123,7 +123,6 @@ function MainApp() {
     };
   }, []);
 
-  // Wrapper aman untuk komunikasi dengan Google Apps Script
   const gasFetch = async (action, data) => {
     try {
       return await fetch(GAS_URL, {
@@ -140,13 +139,15 @@ function MainApp() {
 
   const fetchData = async () => {
     setIsLoading(true);
-    const ts = new Date().getTime(); // Tambahan Anti-Cache agar browser selalu mengambil data terbaru dari Google Sheet
+    const ts = new Date().getTime(); 
     try {
-      // Mengambil data secara berurutan (sequential) untuk menghindari Apps Script nge-blank
-      const uRes = await fetch(`${GAS_URL}?action=getUsers&t=${ts}`).then(r => r.json().catch(()=>[]));
-      const lRes = await fetch(`${GAS_URL}?action=getLoans&t=${ts}`).then(r => r.json().catch(()=>[]));
-      const tRes = await fetch(`${GAS_URL}?action=getTransactions&t=${ts}`).then(r => r.json().catch(()=>[]));
-      const aRes = await fetch(`${GAS_URL}?action=getAssets&t=${ts}`).then(r => r.json().catch(()=>[]));
+      // Promise.all memastikan sinkronisasi data paralel dan super cepat
+      const [uRes, lRes, tRes, aRes] = await Promise.all([
+        fetch(`${GAS_URL}?action=getUsers&t=${ts}`).then(r => r.json().catch(()=>[])),
+        fetch(`${GAS_URL}?action=getLoans&t=${ts}`).then(r => r.json().catch(()=>[])),
+        fetch(`${GAS_URL}?action=getTransactions&t=${ts}`).then(r => r.json().catch(()=>[])),
+        fetch(`${GAS_URL}?action=getAssets&t=${ts}`).then(r => r.json().catch(()=>[]))
+      ]);
       
       setUsers(Array.isArray(uRes) ? uRes : []); 
       setLoans(Array.isArray(lRes) ? lRes : []); 
@@ -226,7 +227,6 @@ function MainApp() {
     const user = safeUsers.find(u => u.id === userId);
     const expected = getExpectedSavingsMonths(user?.joinDate, targetYear);
     
-    // PERBAIKAN UTAMA: Identifikasi tagihan menggunakan referenceId unik (SW-{userId}-...)
     const userSavingsTrx = safeTransactions.filter(t => t.referenceId && t.referenceId.startsWith(`SW-${userId}-`));
     
     let paidCount = 0; let paidMonthsArray = new Array(12).fill(false);
@@ -253,42 +253,50 @@ function MainApp() {
     };
   };
 
-  const handleToggleSavings = async (user, year, monthIndex, isCurrentlyPaid) => {
+  const handlePaySpecificMonth = (user, year, monthIndex) => {
     const monthStr = (monthIndex + 1).toString().padStart(2, '0');
     const refId = `SW-${user.id}-${year}-${monthStr}`;
-    const monthName = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Ags','Sep','Okt','Nov','Des'][monthIndex];
+    const monthNames = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
+    const monthName = monthNames[monthIndex];
 
-    if (!isCurrentlyPaid) {
-      // OPTIMISTIC UPDATE: Centang langsung muncul agar tidak ada kesan "loading" yang lama
-      const newTrx = {
-        id: generateId('INV'), date: new Date().toISOString().split('T')[0], type: 'Simpanan Wajib',
-        amount: SIMPANAN_WAJIB_PER_BULAN, referenceId: refId, userId: user.id, adminId: currentUser.id
-      };
-      
-      setTransactions(prev => [...prev, newTrx]);
+    showConfirm(`Terima setoran Simpanan Wajib untuk bulan ${monthName} ${year} sebesar ${formatRp(SIMPANAN_WAJIB_PER_BULAN)}?`, async () => {
+        setIsLoading(true);
+        const newTrx = {
+            id: generateId('INV'),
+            date: new Date().toISOString().split('T')[0],
+            type: 'Simpanan Wajib',
+            amount: SIMPANAN_WAJIB_PER_BULAN,
+            referenceId: refId,
+            userId: user.id,
+            adminId: currentUser.id
+        };
 
-      try {
-        await gasFetch('addTransaction', newTrx);
-      } catch (err) { 
-        setTransactions(prev => prev.filter(t => t.id !== newTrx.id)); // Rollback jika error
-        showAlert("Gagal menyimpan ceklis ke server."); 
-      }
-    } else {
-      showConfirm(`Yakin membatalkan ceklis bulan ${monthName} untuk ${user.name}? Kas sebesar ${formatRp(SIMPANAN_WAJIB_PER_BULAN)} akan ditarik kembali.`, async () => {
-         // PERBAIKAN: Penghapusan juga hanya melihat referensi ID agar selalu ditemukan
-         const trxToDelete = safeTransactions.find(t => t.referenceId === refId);
-         if (trxToDelete) {
-           // OPTIMISTIC UPDATE: Centang langsung hilang
-           setTransactions(prev => prev.filter(t => t.id !== trxToDelete.id));
-           try {
-             await gasFetch('deleteTransaction', { id: trxToDelete.id });
-           } catch (err) { 
-             setTransactions(prev => [...prev, trxToDelete]); // Rollback centang jika gagal
-             showAlert("Gagal membatalkan ceklis."); 
-           }
-         }
-      });
-    }
+        // OPTIMISTIC UPDATE: Langsung update state transaksi agar UI (Daftar Tunggakan) merespon seketika!
+        // Ini MENCEGAH race condition (delay) dari Google Sheets
+        setTransactions(prev => [...prev, newTrx]);
+
+        try {
+            // Eksekusi API secara background
+            await gasFetch('addTransaction', newTrx);
+            
+            const invoiceData = {
+                id: generateId('INV-SW'),
+                date: newTrx.date,
+                referenceId: `SW ${year}: Bulan ${monthName}`,
+                userId: user.id,
+                amount: SIMPANAN_WAJIB_PER_BULAN
+            };
+            
+            setSelectedSavingsUser(null);
+            setPrintInvoice(invoiceData);
+            
+            // PENTING: fetchData() tidak lagi dipanggil di sini untuk menghindari bug data hilang saat direfresh
+        } catch (err) {
+            setTransactions(prev => prev.filter(t => t.id !== newTrx.id)); 
+            showAlert("Terjadi kesalahan saat memproses data ke server. Mohon coba lagi.");
+        }
+        setIsLoading(false);
+    });
   };
 
   const handleAddMember = async (e) => {
@@ -305,11 +313,17 @@ function MainApp() {
       role: 'member', name: form.name.value, phone: phoneRaw,
       joinDate: form.joinDate.value, status: 'Aktif'
     };
+    
+    // Optimistic Update
+    setUsers(prev => [newMember, ...prev]);
     try {
       await gasFetch('addUser', newMember);
       showAlert(`Anggota ${newMember.name} berhasil didaftarkan! (Password default: 123456)`);
-      fetchData(); form.reset();
-    } catch(err) { showAlert("Gagal mendaftarkan anggota."); }
+      form.reset();
+    } catch(err) { 
+      setUsers(prev => prev.filter(u => u.id !== newMember.id));
+      showAlert("Gagal mendaftarkan anggota."); 
+    }
     setIsLoading(false);
   };
 
@@ -324,53 +338,24 @@ function MainApp() {
 
     return (
       <div className="bg-slate-50 border border-slate-200 p-4 md:p-6 rounded-2xl text-sm space-y-4 shadow-inner">
-         <h3 className="font-black text-lg text-slate-800 border-b-2 border-slate-200 pb-2 flex items-center gap-2">📋 HASIL ANALISIS AKAD SYARIAH KOPERASI</h3>
-         
+         <h3 className="font-black text-lg text-slate-800 border-b-2 border-slate-200 pb-2 flex items-center gap-2">📋 HASIL ANALISIS AKAD SYARIAH</h3>
          <div className="flex justify-between">
            <span className="font-bold text-slate-500">Nama Pemohon:</span>
            <span className="font-bold text-slate-800">{userName || '...'}</span>
          </div>
          <div className="flex justify-between border-b border-slate-200 pb-2">
-           <span className="font-bold text-slate-500">Total Dana yang Diajukan:</span>
+           <span className="font-bold text-slate-500">Total Pengajuan:</span>
            <span className="font-black text-emerald-600 text-lg">{formatRp(totalPengajuan)}</span>
          </div>
-
-         {itemPrice > 0 && (
-           <div className="bg-white p-3 md:p-4 rounded-xl border border-slate-200">
-             <h4 className="font-black text-slate-800 flex items-center gap-2 mb-2">🛒 1. Pembiayaan Barang (Akad Murabahah)</h4>
-             <ul className="space-y-1 text-slate-600 text-xs md:text-sm pl-6 list-disc">
-               <li><b>Peruntukan:</b> Pembelian {itemName || 'Barang/Jasa'}</li>
-               <li><b>Nilai Barang Asli:</b> {formatRp(itemPrice)}</li>
-               <li><b>Margin Keuntungan Koperasi:</b> <span className="text-emerald-600 font-bold">{formatRp(margin)}</span></li>
-               <li><b>Total Harga Jual Koperasi ke Guru:</b> <span className="font-bold">{formatRp(totalItem)}</span></li>
-               <li><b>Status Sifat Angsuran:</b> Tetap (Flat) hingga lunas.</li>
-             </ul>
-           </div>
-         )}
-
-         {cash > 0 && (
-           <div className="bg-white p-3 md:p-4 rounded-xl border border-slate-200">
-             <h4 className="font-black text-slate-800 flex items-center gap-2 mb-2">🤝 {itemPrice > 0 ? '2' : '1'}. Pinjaman Tunai Darurat (Akad Qardh)</h4>
-             <ul className="space-y-1 text-slate-600 text-xs md:text-sm pl-6 list-disc">
-               <li><b>Peruntukan:</b> Uang Tunai Pegangan / Kebutuhan Bebas</li>
-               <li><b>Nilai Pinjaman Pokok:</b> {formatRp(cash)}</li>
-               <li><b>Keuntungan Koperasi:</b> Rp0 (Bebas Riba)</li>
-               <li><b>Biaya Administrasi Riil Dokumen:</b> {formatRp(adminFee)} (Flat)</li>
-               <li><b>Total yang Wajib Dikembalikan:</b> <span className="font-bold">{formatRp(totalCash)}</span></li>
-             </ul>
-           </div>
-         )}
-
          <div className="bg-slate-900 text-white p-4 rounded-xl shadow-md">
-           <h4 className="font-black flex items-center gap-2 mb-3">🧮 3. Resume Skema Angsuran (Tenor: {tenor} Bulan)</h4>
-           {itemPrice > 0 && <div className="flex justify-between text-xs md:text-sm text-slate-300 mb-1"><span>Cicilan Murabahah/Bulan:</span> <span>{formatRp(cicilanItem)}</span></div>}
-           {cash > 0 && <div className="flex justify-between text-xs md:text-sm text-slate-300 mb-2 border-b border-slate-700 pb-2"><span>Cicilan Qardh/Bulan:</span> <span>{formatRp(cicilanCash)}</span></div>}
+           <h4 className="font-black flex items-center gap-2 mb-3">🧮 Resume Angsuran (Tenor: {tenor} Bulan)</h4>
+           {itemPrice > 0 && <div className="flex justify-between text-xs md:text-sm text-slate-300 mb-1"><span>Murabahah:</span> <span>{formatRp(cicilanItem)}</span></div>}
+           {cash > 0 && <div className="flex justify-between text-xs md:text-sm text-slate-300 mb-2 border-b border-slate-700 pb-2"><span>Qardh (Tunai):</span> <span>{formatRp(cicilanCash)}</span></div>}
            <div className="flex justify-between items-center pt-1">
-             <span className="font-bold text-xs md:text-sm text-emerald-400">TOTAL POTONG GAJI / ANGSURAN PER BULAN:</span>
+             <span className="font-bold text-xs md:text-sm text-emerald-400">TOTAL POTONG GAJI / BULAN:</span>
              <span className="font-black text-lg md:text-xl text-white">{formatRp(cicilanItem + cicilanCash)}</span>
            </div>
          </div>
-         <p className="text-[10px] text-slate-400 text-justify mt-2 italic">*Catatan Syariah: Seluruh Keuntungan Margin Murabahah akan dimasukkan ke dalam Kas SHU Koperasi yang akan dibagikan kembali ke seluruh guru pada akhir tahun buku.</p>
       </div>
     );
   };
@@ -402,12 +387,15 @@ function MainApp() {
       installment: 0, paidAmount: 0, remainingAmount: 0, status: 'Pending', date: new Date().toISOString().split('T')[0]
     };
     
+    setLoans(prev => [...prev, newLoan]);
     try {
       await gasFetch('addLoan', newLoan);
       showAlert("Pengajuan terkirim! Menunggu analisis Admin."); 
       setSyariahForm({ itemName: '', itemPrice: 0, cashAmount: 0, tenor: 1, margin: 0, adminFee: 20000 });
-      fetchData(); 
-    } catch(err) { showAlert("Gagal mengajukan!"); }
+    } catch(err) { 
+      setLoans(prev => prev.filter(l => l.id !== newLoan.id));
+      showAlert("Gagal mengajukan!"); 
+    }
     setIsLoading(false);
   };
 
@@ -435,13 +423,18 @@ function MainApp() {
       referenceId: `CAIR-${newLoan.id}`, userId: newLoan.userId, adminId: currentUser.id
     };
 
+    setLoans(prev => [...prev, newLoan]);
+    setTransactions(prev => [...prev, disbursementTrx]);
+
     try {
       await gasFetch('addLoan', newLoan);
       await gasFetch('addTransaction', disbursementTrx);
       showAlert("Akad Hybrid Aktif & Kas terpotong untuk pencairan!"); 
       setAdmSyariahForm({ userId: '', itemName: '', itemPrice: 0, cashAmount: 0, tenor: 1, margin: 0, adminFee: 20000 });
-      fetchData(); 
-    } catch(err) { showAlert("Gagal menyimpan akad manual!"); }
+    } catch(err) { 
+      showAlert("Gagal menyimpan akad manual!"); 
+      fetchData(); // Rollback to server state if failed
+    }
     setIsLoading(false);
   };
 
@@ -467,6 +460,8 @@ function MainApp() {
 
     try {
       if (existingActiveLoan) {
+        // Optimistic Update for Top Up
+        setLoans(prev => prev.filter(l => l.id !== existingActiveLoan.id).concat(updatedLoan));
         const payload = {
           oldLoanId: existingActiveLoan.id, payoffAmount: existingActiveLoan.remainingAmount, newLoan: updatedLoan, 
           trxId: generateId('TRX'), date: updatedLoan.date, userId: existingActiveLoan.userId, adminId: currentUser.id
@@ -474,22 +469,31 @@ function MainApp() {
         await gasFetch('approveTopUp', payload);
         
         if(calculatedNetDisburse > 0) {
-           await gasFetch('addTransaction', {
+           const cairTrx = {
              id: generateId('OUT'), date: updatedLoan.date, type: 'Pencairan Top-Up', amount: calculatedNetDisburse, 
              referenceId: `CAIR-${updatedLoan.id}`, userId: updatedLoan.userId, adminId: currentUser.id
-           });
+           };
+           setTransactions(prev => [...prev, cairTrx]);
+           await gasFetch('addTransaction', cairTrx);
         }
         showAlert("Top-Up Disetujui! Jurnal kas telah diperbarui otomatis.");
       } else {
-        await gasFetch('updateLoan', updatedLoan);
-        await gasFetch('addTransaction', {
+        setLoans(prev => prev.map(l => l.id === updatedLoan.id ? updatedLoan : l));
+        const pencairanTrx = {
             id: generateId('OUT'), date: updatedLoan.date, type: 'Pencairan Akad', amount: principal, 
             referenceId: `CAIR-${updatedLoan.id}`, userId: updatedLoan.userId, adminId: currentUser.id
-        });
+        };
+        setTransactions(prev => [...prev, pencairanTrx]);
+        
+        await gasFetch('updateLoan', updatedLoan);
+        await gasFetch('addTransaction', pencairanTrx);
         showAlert("Pengajuan disetujui, Akad Berjalan, dan Kas dipotong!");
       }
-      setApproveLoanData(null); fetchData();
-    } catch(err) { showAlert("Gagal memproses persetujuan!"); }
+      setApproveLoanData(null); 
+    } catch(err) { 
+      showAlert("Gagal memproses persetujuan!"); 
+      fetchData(); // Rollback if error
+    }
     setIsLoading(false);
   };
 
@@ -497,11 +501,13 @@ function MainApp() {
     showConfirm('Yakin menolak pengajuan ini? Data tidak akan bisa dikembalikan.', async () => {
         setIsLoading(true);
         const updatedLoan = { ...approveLoanData, status: 'Ditolak' };
+        setLoans(prev => prev.map(l => l.id === updatedLoan.id ? updatedLoan : l));
+        
         try {
           await gasFetch('updateLoan', updatedLoan);
           showAlert("Pengajuan telah ditolak.");
-          setApproveLoanData(null); fetchData();
-        } catch(err) { showAlert("Gagal menolak pengajuan."); }
+          setApproveLoanData(null); 
+        } catch(err) { showAlert("Gagal menolak pengajuan."); fetchData(); }
         setIsLoading(false);
     });
   };
@@ -521,10 +527,12 @@ function MainApp() {
       ...editingLoan, description: form.description.value,
       total: parseFloat(form.total.value), remainingAmount: parseFloat(form.remaining.value), status: form.status.value
     };
+    setLoans(prev => prev.map(l => l.id === updatedLoan.id ? updatedLoan : l));
+    
     try {
       await gasFetch('editLoan', updatedLoan);
-      showAlert("Akad berhasil diperbarui!"); fetchData(); setEditingLoan(null);
-    } catch(err) { showAlert("Gagal memperbarui akad."); }
+      showAlert("Akad berhasil diperbarui!"); setEditingLoan(null);
+    } catch(err) { showAlert("Gagal memperbarui akad."); fetchData(); }
     setIsLoading(false);
   };
 
@@ -534,12 +542,12 @@ function MainApp() {
     
     showConfirm('PERINGATAN: Yakin menghapus akad ini secara permanen?', async () => {
         setIsLoading(true);
+        setLoans(prev => prev.filter(l => l.id !== loanId));
         try {
           await gasFetch('deleteLoan', { id: loanId });
-          await fetchData();
           showAlert("Akad berhasil dihapus.");
         } catch (error) {
-          showAlert("Gagal menghapus pinjaman.");
+          showAlert("Gagal menghapus pinjaman."); fetchData();
         } 
         setIsLoading(false);
     });
@@ -564,11 +572,19 @@ function MainApp() {
           paidAmount: Number(loan.paidAmount || 0) + parsedAmount, status: newRemaining <= 0 ? 'Lunas' : 'Aktif'
         };
 
+        // Optimistic Updates
+        setTransactions(prev => [...prev, newTrx]);
+        setLoans(prev => prev.map(l => l.id === updatedLoan.id ? updatedLoan : l));
+
         try {
           await gasFetch('addTransaction', newTrx);
           await gasFetch('updateLoan', updatedLoan);
-          showAlert("Cicilan berhasil dicatat & Sisa hutang terpotong!"); setPrintInvoice(newTrx); fetchData(); 
-        } catch (err) { showAlert("Gagal memproses pembayaran."); }
+          showAlert("Cicilan berhasil dicatat & Sisa hutang terpotong!"); 
+          setPrintInvoice(newTrx); 
+        } catch (err) { 
+          showAlert("Gagal memproses pembayaran."); 
+          fetchData(); // Rollback if error
+        }
         setIsLoading(false);
     });
   };
@@ -580,10 +596,12 @@ function MainApp() {
       id: generateId('TRX'), date: form.date.value, type: form.type.value, amount: parseFloat(form.amount.value),
       referenceId: form.description.value, userId: 'Internal', adminId: currentUser.id
     };
+    
+    setTransactions(prev => [...prev, newTrx]);
     try {
       await gasFetch('addTransaction', newTrx);
-      showAlert("Transaksi Kas Berhasil Dicatat!"); fetchData(); setShowTrxModal(false);
-    } catch (err) {}
+      showAlert("Transaksi Kas Berhasil Dicatat!"); setShowTrxModal(false);
+    } catch (err) { fetchData(); }
     setIsLoading(false);
   };
 
@@ -605,12 +623,11 @@ function MainApp() {
           <h2 className="text-2xl font-black text-center text-slate-800 mb-6">Sistem Koperasi</h2>
           <input name="username" placeholder="Username / ID" required className="w-full mb-4 px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500" />
           <input name="password" type="password" placeholder="Password" required className="w-full mb-6 px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500" />
-          <button type="submit" disabled={isLoading} className="w-full bg-emerald-600 text-white py-3 rounded-lg font-bold text-lg hover:bg-emerald-700 transition">Masuk</button>
+          <button type="submit" disabled={isLoading} className="w-full bg-emerald-600 text-white py-3 rounded-lg font-bold text-lg hover:bg-emerald-700 transition">{isLoading ? 'Menghubungkan...' : 'Masuk'}</button>
           <div className="text-center mt-6 pt-4 border-t border-slate-100">
             <p className="text-xs text-slate-400 font-bold">&copy; {new Date().getFullYear()} Permana Corp.</p>
           </div>
         </form>
-        {/* MODAL GLOBAL DI HALAMAN LOGIN */}
         {modal.isOpen && (
            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[200] p-4">
              <div className="bg-white p-6 rounded-3xl max-w-sm w-full shadow-2xl">
@@ -637,7 +654,7 @@ function MainApp() {
           <div className="flex justify-between border-b pb-2"><span>No. Referensi:</span> <b>{printInvoice.id}</b></div>
           <div className="flex justify-between border-b pb-2"><span>Tanggal:</span> <b>{printInvoice.date}</b></div>
           <div className="flex justify-between border-b pb-2"><span>Terima Dari:</span> <b>{memberRef?.name || 'Umum'}</b></div>
-          <div className="flex justify-between border-b pb-2"><span>ID Akad / Ref:</span> <b>{printInvoice.referenceId}</b></div>
+          <div className="flex justify-between border-b pb-2"><span>Referensi:</span> <b>{printInvoice.referenceId}</b></div>
           <div className="flex justify-between text-xl mt-6 pt-4 border-t-2 border-slate-800">
             <span className="font-bold">Total Diterima:</span> <b className="text-emerald-700">{formatRp(printInvoice.amount)}</b>
           </div>
@@ -645,7 +662,7 @@ function MainApp() {
         </div>
         <div className="no-print space-y-4">
           <button onClick={() => window.print()} className="w-full flex items-center justify-center gap-2 bg-emerald-600 text-white py-4 rounded-xl font-bold text-lg"><Printer/> Cetak Struk</button>
-          <button onClick={() => setPrintInvoice(null)} className="w-full bg-slate-100 text-slate-600 py-3 rounded-xl font-bold">Tutup</button>
+          <button onClick={() => setPrintInvoice(null)} className="w-full bg-slate-100 text-slate-600 py-3 rounded-xl font-bold">Kembali</button>
         </div>
       </div>
     );
@@ -714,13 +731,13 @@ function MainApp() {
              </h2>
           </div>
           <button onClick={fetchData} className="px-3 md:px-4 py-2 bg-slate-100 rounded-lg text-xs md:text-sm font-bold text-slate-600 hover:bg-slate-200 flex gap-2 items-center">
-            {isLoading ? '🔄 Sedang...' : '🔄 Sinkron'}
+            {isLoading ? '🔄 Memproses...' : '🔄 Sinkron Manual'}
           </button>
         </div>
 
         <div className="p-4 md:p-8">
             
-            {/* ADMIN DASHBOARD */}
+            {}
             {currentView === 'dashboard' && currentUser.role === 'admin' && (
               <div className="space-y-6">
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
@@ -795,12 +812,13 @@ function MainApp() {
                  </div>
 
                  <div className="overflow-x-auto w-full relative">
-                    <table className="w-full text-left text-sm whitespace-nowrap min-w-[1000px]">
+                    <table className="w-full text-left text-sm whitespace-nowrap min-w-[700px]">
                        <thead className="bg-slate-50 text-slate-500 text-xs uppercase border-b border-slate-200">
                           <tr>
-                            <th className="p-4 font-bold sticky left-0 bg-slate-50 z-10 border-r border-slate-200 shadow-[2px_0_5px_rgba(0,0,0,0.05)]">Nama Anggota</th>
-                            <th className="p-4 font-bold text-center border-r border-slate-200 w-32">Status Tunggakan</th>
-                            {['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Ags','Sep','Okt','Nov','Des'].map(m => ( <th key={m} className="p-4 font-bold text-center w-16 border-r border-slate-100">{m}</th> ))}
+                            <th className="p-4 font-bold border-r border-slate-200">Nama Anggota</th>
+                            <th className="p-4 font-bold text-center border-r border-slate-200 w-40">Status Tunggakan</th>
+                            <th className="p-4 font-bold border-r border-slate-200">Detail Bulan (Tertunggak)</th>
+                            <th className="p-4 font-bold text-right w-32">Aksi</th>
                           </tr>
                        </thead>
                        <tbody className="divide-y divide-slate-100">
@@ -813,12 +831,13 @@ function MainApp() {
 
                             return (
                                <tr key={user.id} className="hover:bg-slate-50">
-                                  <td className="p-4 sticky left-0 bg-white z-10 border-r border-slate-200 shadow-[2px_0_5px_rgba(0,0,0,0.05)]">
-                                     <p className="font-bold text-slate-800 truncate max-w-[150px]">{user.name}</p>
+                                  <td className="p-4 border-r border-slate-200 bg-white">
+                                     <p className="font-bold text-slate-800 truncate">{user.name}</p>
                                      <p className="text-[10px] text-slate-400 font-mono">Join: {user.joinDate || '-'}</p>
                                   </td>
+                                  
                                   <td className="p-4 text-center border-r border-slate-200 bg-slate-50/50">
-                                     <span className={`font-black block text-xs md:text-sm ${data.arrearsAmount > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                                     <span className={`font-black block text-sm ${data.arrearsAmount > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
                                        {data.arrearsAmount > 0 ? formatRp(data.arrearsAmount) : 'LUNAS'}
                                      </span>
                                      {user.phone && (
@@ -827,17 +846,27 @@ function MainApp() {
                                         </a>
                                      )}
                                   </td>
-                                  {data.paidArray.map((isPaid, idx) => (
-                                     <td key={idx} className="p-2 text-center border-r border-slate-50 relative group">
-                                        <input 
-                                          type="checkbox"
-                                          checked={isPaid}
-                                          onChange={() => handleToggleSavings(user, savingsYear, idx, isPaid)}
-                                          className="w-5 h-5 cursor-pointer accent-emerald-600 rounded-md shadow-sm border-slate-300"
-                                          title={isPaid ? "Klik untuk membatalkan" : "Klik untuk menandai lunas"}
-                                        />
-                                     </td>
-                                  ))}
+
+                                  <td className="p-4 border-r border-slate-200 whitespace-normal">
+                                     <div className="flex flex-wrap gap-1.5">
+                                         {data.unpaidMonthsNames.length === 0 ? (
+                                            <span className="text-emerald-500 font-bold text-xs flex items-center gap-1"><CheckCircle className="w-4 h-4"/> Tidak ada tunggakan.</span>
+                                         ) : (
+                                            data.unpaidMonthsNames.map(m => (
+                                              <span key={m} className="bg-red-50 text-red-600 border border-red-200 px-2.5 py-1 rounded-md text-[10px] font-bold shadow-sm">{m}</span>
+                                            ))
+                                         )}
+                                     </div>
+                                  </td>
+
+                                  <td className="p-4 text-right">
+                                      <button 
+                                          onClick={() => setSelectedSavingsUser(user)}
+                                          className="px-4 py-2.5 rounded-lg text-xs font-bold whitespace-nowrap shadow-sm transition bg-slate-900 hover:bg-slate-800 text-white"
+                                      >
+                                          Lihat & Bayar
+                                      </button>
+                                  </td>
                                </tr>
                             )
                          })}
@@ -1130,7 +1159,7 @@ function MainApp() {
               </div>
             )}
 
-            {/* MEMBER DASHBOARD */}
+            {}
             {currentView === 'dashboard' && currentUser.role === 'member' && (
               <div className="space-y-6 md:space-y-8">
                 {(() => {
@@ -1301,7 +1330,87 @@ function MainApp() {
         </div>
       </main>
 
+      {}
+      {selectedSavingsUser && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
+          <div className="bg-white rounded-3xl w-full max-w-md overflow-hidden shadow-2xl flex flex-col max-h-[95vh]">
+            <div className="p-5 md:p-6 bg-slate-50 border-b flex justify-between items-center shrink-0">
+              <div>
+                 <h3 className="font-black text-lg text-slate-800">Detail Simpanan Wajib</h3>
+                 <p className="text-sm font-medium text-slate-500">{selectedSavingsUser.name} ({savingsYear})</p>
+              </div>
+              <button onClick={() => setSelectedSavingsUser(null)} className="text-slate-400 hover:text-red-500 bg-slate-200/50 p-2 rounded-full"><X className="w-5 h-5"/></button>
+            </div>
+            
+            <div className="p-5 overflow-y-auto bg-slate-50">
+               {(() => {
+                  const sData = getMemberSavingsData(selectedSavingsUser.id, savingsYear);
+                  const monthNames = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
+                  
+                  let arrearsList = [];
+                  let paidList = [];
+
+                  monthNames.forEach((m, i) => {
+                      const isExpected = i >= sData.expectedInfo.start && i <= sData.expectedInfo.end;
+                      const isPaid = sData.paidArray[i];
+
+                      if (isExpected) {
+                          if (isPaid) paidList.push({ name: m, index: i });
+                          else arrearsList.push({ name: m, index: i });
+                      }
+                  });
+
+                  return (
+                    <div>
+                        {/* DAFTAR TUNGGAKAN - Paling Atas */}
+                        <h4 className="font-bold text-red-600 mb-3 flex items-center gap-2 border-b border-red-200 pb-2">
+                           <AlertCircle className="w-5 h-5"/> Daftar Tunggakan ({savingsYear})
+                        </h4>
+                        <div className="space-y-3 mb-8">
+                            {arrearsList.length === 0 ? (
+                               <p className="text-sm text-slate-500 bg-white p-4 rounded-xl border border-slate-200 shadow-sm text-center">Bebas dari tunggakan simpanan.</p>
+                            ) : (
+                               arrearsList.map(month => (
+                                  <div key={month.index} className="flex justify-between items-center p-4 bg-white border border-red-200 rounded-xl shadow-sm hover:border-red-400 transition">
+                                      <div>
+                                          <p className="font-bold text-slate-800">Bulan {month.name}</p>
+                                          <p className="text-xs font-bold text-red-500">{formatRp(SIMPANAN_WAJIB_PER_BULAN)}</p>
+                                      </div>
+                                      <button 
+                                         onClick={() => handlePaySpecificMonth(selectedSavingsUser, savingsYear, month.index)} 
+                                         className="bg-slate-900 text-white px-5 py-2.5 rounded-lg text-xs font-bold hover:bg-slate-800 shadow-md">
+                                         Terima Dana
+                                      </button>
+                                  </div>
+                               ))
+                            )}
+                        </div>
+
+                        {/* DAFTAR SUDAH DIBAYAR */}
+                        <h4 className="font-bold text-emerald-600 mb-3 flex items-center gap-2 border-b border-emerald-200 pb-2">
+                           <CheckCircle className="w-5 h-5"/> Sudah Lunas ({savingsYear})
+                        </h4>
+                        <div className="space-y-2">
+                            {paidList.length === 0 ? (
+                               <p className="text-sm text-slate-500 bg-white p-4 rounded-xl border border-slate-200 shadow-sm text-center">Belum ada pembayaran.</p>
+                            ) : (
+                               paidList.map(month => (
+                                  <div key={month.index} className="flex justify-between items-center p-3 bg-emerald-50 border border-emerald-100 rounded-xl">
+                                      <span className="font-bold text-emerald-800 text-sm">Bulan {month.name}</span>
+                                      <span className="text-[10px] font-bold text-emerald-600 bg-emerald-200 px-2 py-1 rounded">LUNAS</span>
+                                  </div>
+                               ))
+                            )}
+                        </div>
+                    </div>
+                  )
+               })()}
+            </div>
+          </div>
+        </div>
+      )}
       
+      {}
       {/* MODAL JURNAL MANUAL */}
       {showTrxModal && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
@@ -1499,4 +1608,4 @@ export default function App() {
         <MainApp />
      </ErrorBoundary>
   );
-                                   }
+}
