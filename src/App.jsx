@@ -5,7 +5,7 @@ import {
   Scale, FileText, Box, Edit, Trash2, X, PiggyBank, MessageCircle, Menu, Gift
 } from 'lucide-react';
 
-const GAS_URL ='https://script.google.com/macros/s/AKfycbx7jAhWTRP_9dMKYHe6exrNQ-jgeoJjAMcvJU27ORm7gmX48XxbW_QGc59EN3Yj6tU/exec'; 
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbwgNbXLkv-PPJT7RxqNAoyJAsyi2zFdw9EYYpCNkF9-vy61W1KYW6YBEnifW6fL0Snp/exec'; 
 
 const formatRp = (num) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(num || 0);
 const generateId = (prefix) => `${prefix}-${Math.floor(1000 + Math.random() * 9000)}`;
@@ -125,12 +125,13 @@ function MainApp() {
 
   const gasFetch = async (action, data) => {
     try {
-      return await fetch(GAS_URL, {
+      const response = await fetch(GAS_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify({ action, data }),
         redirect: 'follow'
       });
+      return await response.json(); // Parsing JSON agar error dari server bisa terbaca
     } catch (error) {
       console.error("Gagal menghubungi server", error);
       throw error;
@@ -195,7 +196,6 @@ function MainApp() {
     return { ...trx, isIncome: isTrxIn, currentBalance: totalKas };
   });
 
-  // PERBAIKAN: Pisahkan Simpanan Wajib dari Piutang Koperasi agar pembukuan tidak kacau
   const totalPiutang = safeLoans.filter(l => l.status === 'Aktif' && l.type !== 'Tagihan Simpanan Wajib').reduce((sum, l) => sum + Number(l.remainingAmount), 0);
   const totalAsetTetap = safeAssets.reduce((sum, a) => sum + Number(a.value), 0);
   const totalAktiva = totalKas + totalPiutang + totalAsetTetap;
@@ -221,16 +221,13 @@ function MainApp() {
     return { start: startMonth, end: endMonth, count: count > 0 ? count : 0 };
   };
 
-  // SISTEM LEDGER BARU: Menggunakan tabel Loans untuk ketahanan data 100% saat refresh
   const getSavingsLedger = (userId, targetYear) => {
     const user = safeUsers.find(u => u.id === userId);
     const expected = getExpectedSavingsMonths(user?.joinDate, targetYear);
     const expectedAmount = expected.count * SIMPANAN_WAJIB_PER_BULAN;
     
-    // Cari tagihan "Akad/Hutang" Virtual khusus untuk simpanan
     const savingsLoan = safeLoans.find(l => l.userId === userId && l.type === 'Tagihan Simpanan Wajib' && l.description.includes(targetYear.toString()));
     
-    // Hitung total simpanan sepanjang masa (menggabungkan data lama dan baru)
     const totalPaidAllTime = safeTransactions
         .filter(t => (t.type || '').toLowerCase().includes('simpanan') && t.userId === userId)
         .reduce((sum, t) => sum + Number(t.amount || 0), 0);
@@ -246,7 +243,6 @@ function MainApp() {
     let unpaid = [];
     for (let i = ledger.expected.start; i <= ledger.expected.end; i++) {
         const relativeIndex = i - ledger.expected.start;
-        // Jika index posisi bulan ini lebih besar/sama dengan jumlah bulan yg dibayar, artinya belum dibayar
         if (relativeIndex >= monthsPaidCount) {
             unpaid.push(monthNames[i]);
         }
@@ -285,7 +281,6 @@ function MainApp() {
     const savingsLoan = ledger.savingsLoan;
     const memberName = ledger.user.name;
     
-    // Menghitung bulan apa saja yang dibayar secara akurat untuk dicetak di struk nota
     const monthsPaidCount = Math.floor((savingsLoan.paidAmount || 0) / SIMPANAN_WAJIB_PER_BULAN);
     const numberOfMonthsPaying = Math.ceil(amountToPay / SIMPANAN_WAJIB_PER_BULAN); 
     const monthNames = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
@@ -309,10 +304,9 @@ function MainApp() {
         const newTrx = {
             id: generateId('INV'), date: new Date().toISOString().split('T')[0], type: 'Simpanan Wajib',
             amount: amountToPay, referenceId: savingsLoan.id, userId: savingsLoan.userId, adminId: currentUser.id,
-            printNotes: printNotesInfo // Tambahan keterangan bulan khusus untuk dicetak
+            printNotes: printNotesInfo
         };
 
-        // Optimistic Updates
         setLoans(prev => prev.map(l => l.id === updatedLoan.id ? updatedLoan : l));
         setTransactions(prev => [...prev, newTrx]);
 
@@ -321,7 +315,7 @@ function MainApp() {
             await gasFetch('addTransaction', newTrx);
             setPrintInvoice(newTrx);
             setSelectedSavingsUser(null);
-            fetchData(); // Sinkronisasi penuh 
+            fetchData(); 
         } catch(e) {
             showAlert("Gagal menyimpan pembayaran ke server.");
             fetchData();
@@ -617,11 +611,15 @@ function MainApp() {
        setIsLoading(true);
        const updatedUser = { ...userToReset, password: '123456' };
        try {
-          await gasFetch('updateUser', updatedUser);
+          const res = await gasFetch('updateUser', updatedUser);
+          if (res && res.error) {
+             showAlert('Gagal mereset sandi: ' + res.error);
+             setIsLoading(false); return;
+          }
           setUsers(prev => prev.map(u => u.id === updatedUser.id ? updatedUser : u));
           showAlert(`Sandi ${userToReset.name} berhasil direset ke "123456".`);
        } catch(err) {
-          showAlert("Gagal mereset sandi.");
+          showAlert("Gagal mereset sandi. Pastikan server terhubung.");
        }
        setIsLoading(false);
     });
@@ -633,11 +631,15 @@ function MainApp() {
         setIsLoading(true);
         const updatedUser = { ...userToToggle, status: newStatus };
         try {
-          await gasFetch('updateUser', updatedUser);
+          const res = await gasFetch('updateUser', updatedUser);
+          if (res && res.error) {
+             showAlert('Gagal mengubah status: ' + res.error);
+             setIsLoading(false); return;
+          }
           setUsers(prev => prev.map(u => u.id === updatedUser.id ? updatedUser : u));
           showAlert(`Status ${userToToggle.name} berhasil diubah menjadi ${newStatus}.`);
         } catch(err) {
-          showAlert("Gagal mengubah status.");
+          showAlert("Gagal mengubah status. Pastikan server terhubung.");
         }
         setIsLoading(false);
      });
@@ -649,7 +651,8 @@ function MainApp() {
     const oldPassword = form.oldPassword.value;
     const newPassword = form.newPassword.value;
 
-    if (oldPassword !== currentUser.password) {
+    // Tambahkan konversi String() agar Angka '123456' dari Spreadsheet terbaca sama dengan Teks inputan
+    if (oldPassword !== String(currentUser.password)) {
       showAlert('Sandi saat ini salah!');
       return;
     }
@@ -661,14 +664,19 @@ function MainApp() {
     setIsLoading(true);
     const updatedUser = { ...currentUser, password: newPassword };
     try {
-      await gasFetch('updateUser', updatedUser);
+      const res = await gasFetch('updateUser', updatedUser);
       
-      // Update session & state
+      if (res && res.error) {
+         showAlert('Gagal dari Server: ' + res.error);
+         setIsLoading(false);
+         return;
+      }
+      
       setCurrentUser(updatedUser);
       safeStorage.set('ksp_user', JSON.stringify(updatedUser));
       setUsers(prev => prev.map(u => u.id === updatedUser.id ? updatedUser : u));
       
-      showAlert('Kata sandi berhasil diubah!');
+      showAlert('Kata sandi berhasil diubah dan tersimpan!');
       form.reset();
     } catch(err) {
       showAlert('Gagal mengubah kata sandi. Pastikan server terhubung.');
@@ -676,8 +684,49 @@ function MainApp() {
     setIsLoading(false);
   };
 
-  const handleSaveAsset = (e) => { e.preventDefault(); showAlert('Fungsi simpan aset disimulasikan.'); setShowAssetModal(false); };
-  const handleDeleteAsset = () => { showAlert('Fungsi hapus aset disimulasikan.'); };
+  const handleSaveAsset = async (e) => {
+    e.preventDefault(); setIsLoading(true);
+    const form = e.target;
+    const assetData = {
+      name: form.name.value,
+      category: form.category.value,
+      purchaseDate: form.date.value,
+      value: parseFloat(form.value.value)
+    };
+    
+    try {
+      if (editingAsset) {
+        const res = await gasFetch('updateAsset', { id: editingAsset.id, ...assetData });
+        if (res && res.error) { showAlert("Gagal dari Server: " + res.error); setIsLoading(false); return; }
+        showAlert("Aset berhasil diperbarui!");
+      } else {
+        const res = await gasFetch('addAsset', { id: generateId('AST'), ...assetData });
+        if (res && res.error) { showAlert("Gagal dari Server: " + res.error); setIsLoading(false); return; }
+        showAlert("Aset baru berhasil ditambahkan ke inventaris!");
+      }
+      fetchData();
+      setShowAssetModal(false);
+      setEditingAsset(null);
+    } catch(err) {
+      showAlert("Gagal menyimpan aset. Pastikan server terhubung.");
+    }
+    setIsLoading(false);
+  };
+
+  const handleDeleteAsset = (id) => {
+    showConfirm('Yakin menghapus aset ini secara permanen dari inventaris?', async () => {
+      setIsLoading(true);
+      try {
+        const res = await gasFetch('deleteAsset', { id });
+        if (res && res.error) { showAlert("Gagal dari Server: " + res.error); setIsLoading(false); return; }
+        showAlert("Aset berhasil dihapus.");
+        fetchData();
+      } catch(err) {
+        showAlert("Gagal menghapus aset.");
+      }
+      setIsLoading(false);
+    });
+  };
 
   const navigate = (view) => {
     setCurrentView(view);
@@ -724,7 +773,6 @@ function MainApp() {
           <div className="flex justify-between border-b pb-2"><span>Terima Dari:</span> <b>{memberRef?.name || 'Umum'}</b></div>
           <div className="flex justify-between border-b pb-2"><span>ID Referensi:</span> <b>{printInvoice.referenceId}</b></div>
           
-          {/* Menampilkan Bulan yang Dibayar pada Struk */}
           {printInvoice.printNotes && (
              <div className="flex justify-between border-b pb-2"><span>Keterangan:</span> <b className="text-right text-emerald-600 max-w-[200px]">{printInvoice.printNotes}</b></div>
           )}
@@ -1076,7 +1124,6 @@ function MainApp() {
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-50">
-                              {/* Sembunyikan Tagihan Simpanan Wajib dari list Akad agar rapi */}
                               {safeLoans.filter(l => l.status !== 'Pending' && l.type !== 'Tagihan Simpanan Wajib').map(loan => (
                                 <tr key={loan.id} className="hover:bg-slate-50 group">
                                   <td className="p-4 md:p-5">
@@ -1657,7 +1704,7 @@ function MainApp() {
                 <div><label className="text-xs font-bold text-slate-500">Tgl Perolehan</label><input type="date" name="date" defaultValue={editingAsset?.purchaseDate || new Date().toISOString().split('T')[0]} className="w-full border-2 p-3 rounded-xl outline-none" required/></div>
               </div>
               <div><label className="text-xs font-bold text-blue-600">Nilai Buku / Harga (Rp)</label><input type="number" name="value" defaultValue={editingAsset?.value} className="w-full border-2 border-blue-200 p-3 rounded-xl outline-none font-black text-blue-700" required/></div>
-              <div className="pt-2"><button type="submit" className="w-full bg-blue-600 text-white font-bold py-4 rounded-xl hover:bg-blue-700 shadow-lg">Simpan Inventaris</button></div>
+              <div className="pt-2"><button type="submit" disabled={isLoading} className="w-full bg-blue-600 text-white font-bold py-4 rounded-xl hover:bg-blue-700 shadow-lg disabled:opacity-50">Simpan Inventaris</button></div>
             </form>
           </div>
         </div>
