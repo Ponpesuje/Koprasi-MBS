@@ -51,7 +51,6 @@ function MainApp() {
   const [printInvoice, setPrintInvoice] = useState(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
-  // Modal Simpanan state
   const [selectedSavingsUser, setSelectedSavingsUser] = useState(null);
 
   const [syariahForm, setSyariahForm] = useState({ itemName: '', itemPrice: 0, cashAmount: 0, tenor: 1, margin: 0, adminFee: 20000 });
@@ -141,7 +140,6 @@ function MainApp() {
     setIsLoading(true);
     const ts = new Date().getTime(); 
     try {
-      // Promise.all memastikan sinkronisasi data paralel dan super cepat
       const [uRes, lRes, tRes, aRes] = await Promise.all([
         fetch(`${GAS_URL}?action=getUsers&t=${ts}`).then(r => r.json().catch(()=>[])),
         fetch(`${GAS_URL}?action=getLoans&t=${ts}`).then(r => r.json().catch(()=>[])),
@@ -165,9 +163,7 @@ function MainApp() {
     e.preventDefault();
     const username = e.target.username.value;
     const password = e.target.password.value;
-    
     const user = (Array.isArray(users) ? users : []).find(u => u.username == username && u.password == password);
-    
     if (user) {
       if(user.status === 'Nonaktif') { showAlert("Akses Ditolak: Akun dinonaktifkan Admin."); return; }
       setCurrentUser(user); 
@@ -198,7 +194,8 @@ function MainApp() {
     return { ...trx, isIncome: isTrxIn, currentBalance: totalKas };
   });
 
-  const totalPiutang = safeLoans.filter(l => l.status === 'Aktif').reduce((sum, l) => sum + Number(l.remainingAmount), 0);
+  // PERBAIKAN: Pisahkan Simpanan Wajib dari Piutang Koperasi agar pembukuan tidak kacau
+  const totalPiutang = safeLoans.filter(l => l.status === 'Aktif' && l.type !== 'Tagihan Simpanan Wajib').reduce((sum, l) => sum + Number(l.remainingAmount), 0);
   const totalAsetTetap = safeAssets.reduce((sum, a) => sum + Number(a.value), 0);
   const totalAktiva = totalKas + totalPiutang + totalAsetTetap;
   const totalPasiva = totalAktiva;
@@ -223,77 +220,96 @@ function MainApp() {
     return { start: startMonth, end: endMonth, count: count > 0 ? count : 0 };
   };
 
-  const getMemberSavingsData = (userId, targetYear) => {
+  // SISTEM LEDGER BARU: Menggunakan tabel Loans untuk ketahanan data 100% saat refresh
+  const getSavingsLedger = (userId, targetYear) => {
     const user = safeUsers.find(u => u.id === userId);
     const expected = getExpectedSavingsMonths(user?.joinDate, targetYear);
+    const expectedAmount = expected.count * SIMPANAN_WAJIB_PER_BULAN;
     
-    const userSavingsTrx = safeTransactions.filter(t => t.referenceId && t.referenceId.startsWith(`SW-${userId}-`));
+    // Cari tagihan "Akad/Hutang" Virtual khusus untuk simpanan
+    const savingsLoan = safeLoans.find(l => l.userId === userId && l.type === 'Tagihan Simpanan Wajib' && l.description.includes(targetYear.toString()));
     
-    let paidCount = 0; let paidMonthsArray = new Array(12).fill(false);
-    userSavingsTrx.forEach(trx => {
-      const parts = (trx.referenceId || '').split('-');
-      if(parts.length >= 4) {
-        const trxYear = parseInt(parts[parts.length - 2]);
-        const trxMonth = parseInt(parts[parts.length - 1]) - 1; 
-        if (trxYear === targetYear && trxMonth >= 0 && trxMonth <= 11) { paidMonthsArray[trxMonth] = true; paidCount++; }
-      }
-    });
+    // Hitung total simpanan sepanjang masa (menggabungkan data lama dan baru)
+    const totalPaidAllTime = safeTransactions
+        .filter(t => (t.type || '').toLowerCase().includes('simpanan') && t.userId === userId)
+        .reduce((sum, t) => sum + Number(t.amount || 0), 0);
 
-    let arrearsCount = 0; let unpaidMonthsNames = [];
-    const monthNames = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
-
-    for(let i = expected.start; i <= expected.end; i++) {
-      if(!paidMonthsArray[i]) { arrearsCount++; unpaidMonthsNames.push(monthNames[i]); }
-    }
-
-    return { 
-      paidArray: paidMonthsArray, expectedInfo: expected, paidCount, 
-      arrearsAmount: arrearsCount * SIMPANAN_WAJIB_PER_BULAN,
-      totalPaidAllTime: userSavingsTrx.reduce((sum, t) => sum + Number(t.amount || 0), 0), unpaidMonthsNames
-    };
+    return { user, expected, expectedAmount, savingsLoan, totalPaidAllTime };
   };
 
-  const handlePaySpecificMonth = (user, year, monthIndex) => {
-    const monthStr = (monthIndex + 1).toString().padStart(2, '0');
-    const refId = `SW-${user.id}-${year}-${monthStr}`;
+  const getUnpaidMonthsNames = (ledger) => {
+    if (!ledger.savingsLoan) return [];
+    const monthsPaidCount = Math.floor((ledger.savingsLoan.paidAmount || 0) / SIMPANAN_WAJIB_PER_BULAN);
     const monthNames = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
-    const monthName = monthNames[monthIndex];
+    
+    let unpaid = [];
+    for (let i = ledger.expected.start; i <= ledger.expected.end; i++) {
+        const relativeIndex = i - ledger.expected.start;
+        // Jika index posisi bulan ini lebih besar/sama dengan jumlah bulan yg dibayar, artinya belum dibayar
+        if (relativeIndex >= monthsPaidCount) {
+            unpaid.push(monthNames[i]);
+        }
+    }
+    return unpaid;
+  };
 
-    showConfirm(`Terima setoran Simpanan Wajib untuk bulan ${monthName} ${year} sebesar ${formatRp(SIMPANAN_WAJIB_PER_BULAN)}?`, async () => {
+  const handleActivateSavings = async (ledger) => {
+    if(ledger.expectedAmount <= 0) {
+        showAlert("Anggota ini belum memiliki kewajiban simpanan di tahun ini (belum bergabung)."); return;
+    }
+    setIsLoading(true);
+    const newLoan = {
+        id: generateId('SW'),
+        userId: ledger.user.id,
+        type: 'Tagihan Simpanan Wajib',
+        description: `Simpanan Wajib Tahun ${savingsYear}`,
+        principal: ledger.expectedAmount, margin: 0, total: ledger.expectedAmount, tenor: 12,
+        installment: SIMPANAN_WAJIB_PER_BULAN, paidAmount: 0, remainingAmount: ledger.expectedAmount,
+        status: 'Aktif', date: new Date().toISOString().split('T')[0]
+    };
+    
+    setLoans(prev => [...prev, newLoan]); // Optimistic
+    try {
+        await gasFetch('addLoan', newLoan);
+        showAlert(`Sistem tagihan berhasil dibuat untuk ${ledger.user.name}.`);
+        fetchData(); 
+    } catch(e) {
+        showAlert("Gagal membuat tagihan.");
+        setLoans(prev => prev.filter(l => l.id !== newLoan.id));
+    }
+    setIsLoading(false);
+  };
+
+  const handlePaySavings = (savingsLoan, amountToPay) => {
+    const memberName = safeUsers.find(u=>u.id===savingsLoan.userId)?.name;
+    showConfirm(`Terima setoran simpanan sebesar ${formatRp(amountToPay)} dari ${memberName}?`, async () => {
         setIsLoading(true);
+        const newRemaining = savingsLoan.remainingAmount - amountToPay;
+        const updatedLoan = {
+            ...savingsLoan,
+            remainingAmount: newRemaining < 0 ? 0 : newRemaining,
+            paidAmount: Number(savingsLoan.paidAmount || 0) + amountToPay,
+            status: newRemaining <= 0 ? 'Lunas' : 'Aktif'
+        };
+        
         const newTrx = {
-            id: generateId('INV'),
-            date: new Date().toISOString().split('T')[0],
-            type: 'Simpanan Wajib',
-            amount: SIMPANAN_WAJIB_PER_BULAN,
-            referenceId: refId,
-            userId: user.id,
-            adminId: currentUser.id
+            id: generateId('INV'), date: new Date().toISOString().split('T')[0], type: 'Simpanan Wajib',
+            amount: amountToPay, referenceId: savingsLoan.id, userId: savingsLoan.userId, adminId: currentUser.id
         };
 
-        // OPTIMISTIC UPDATE: Langsung update state transaksi agar UI (Daftar Tunggakan) merespon seketika!
-        // Ini MENCEGAH race condition (delay) dari Google Sheets
+        // Optimistic Updates
+        setLoans(prev => prev.map(l => l.id === updatedLoan.id ? updatedLoan : l));
         setTransactions(prev => [...prev, newTrx]);
 
         try {
-            // Eksekusi API secara background
+            await gasFetch('updateLoan', updatedLoan);
             await gasFetch('addTransaction', newTrx);
-            
-            const invoiceData = {
-                id: generateId('INV-SW'),
-                date: newTrx.date,
-                referenceId: `SW ${year}: Bulan ${monthName}`,
-                userId: user.id,
-                amount: SIMPANAN_WAJIB_PER_BULAN
-            };
-            
+            setPrintInvoice(newTrx);
             setSelectedSavingsUser(null);
-            setPrintInvoice(invoiceData);
-            
-            // PENTING: fetchData() tidak lagi dipanggil di sini untuk menghindari bug data hilang saat direfresh
-        } catch (err) {
-            setTransactions(prev => prev.filter(t => t.id !== newTrx.id)); 
-            showAlert("Terjadi kesalahan saat memproses data ke server. Mohon coba lagi.");
+            fetchData(); // Sinkronisasi penuh 
+        } catch(e) {
+            showAlert("Gagal menyimpan pembayaran ke server.");
+            fetchData();
         }
         setIsLoading(false);
     });
@@ -313,17 +329,11 @@ function MainApp() {
       role: 'member', name: form.name.value, phone: phoneRaw,
       joinDate: form.joinDate.value, status: 'Aktif'
     };
-    
-    // Optimistic Update
-    setUsers(prev => [newMember, ...prev]);
     try {
       await gasFetch('addUser', newMember);
       showAlert(`Anggota ${newMember.name} berhasil didaftarkan! (Password default: 123456)`);
-      form.reset();
-    } catch(err) { 
-      setUsers(prev => prev.filter(u => u.id !== newMember.id));
-      showAlert("Gagal mendaftarkan anggota."); 
-    }
+      fetchData(); form.reset();
+    } catch(err) { showAlert("Gagal mendaftarkan anggota."); }
     setIsLoading(false);
   };
 
@@ -374,7 +384,6 @@ function MainApp() {
     const principal = Number(itemPrice) + Number(cashAmount);
     
     if(principal <= 0) { showAlert("Nominal pengajuan tidak valid!"); setIsLoading(false); return; }
-
     const scoring = getCreditScore(currentUser.id);
     if(principal > scoring.limit) { showAlert(`Maaf, limit maksimal Anda adalah ${formatRp(scoring.limit)}`); setIsLoading(false); return; }
 
@@ -387,15 +396,12 @@ function MainApp() {
       installment: 0, paidAmount: 0, remainingAmount: 0, status: 'Pending', date: new Date().toISOString().split('T')[0]
     };
     
-    setLoans(prev => [...prev, newLoan]);
     try {
       await gasFetch('addLoan', newLoan);
       showAlert("Pengajuan terkirim! Menunggu analisis Admin."); 
       setSyariahForm({ itemName: '', itemPrice: 0, cashAmount: 0, tenor: 1, margin: 0, adminFee: 20000 });
-    } catch(err) { 
-      setLoans(prev => prev.filter(l => l.id !== newLoan.id));
-      showAlert("Gagal mengajukan!"); 
-    }
+      fetchData(); 
+    } catch(err) { showAlert("Gagal mengajukan!"); }
     setIsLoading(false);
   };
 
@@ -423,18 +429,13 @@ function MainApp() {
       referenceId: `CAIR-${newLoan.id}`, userId: newLoan.userId, adminId: currentUser.id
     };
 
-    setLoans(prev => [...prev, newLoan]);
-    setTransactions(prev => [...prev, disbursementTrx]);
-
     try {
       await gasFetch('addLoan', newLoan);
       await gasFetch('addTransaction', disbursementTrx);
       showAlert("Akad Hybrid Aktif & Kas terpotong untuk pencairan!"); 
       setAdmSyariahForm({ userId: '', itemName: '', itemPrice: 0, cashAmount: 0, tenor: 1, margin: 0, adminFee: 20000 });
-    } catch(err) { 
-      showAlert("Gagal menyimpan akad manual!"); 
-      fetchData(); // Rollback to server state if failed
-    }
+      fetchData(); 
+    } catch(err) { showAlert("Gagal menyimpan akad manual!"); }
     setIsLoading(false);
   };
 
@@ -448,7 +449,7 @@ function MainApp() {
     const totalMargin = (parsed.itemPrice > 0 ? Number(approveSyariahData.margin) : 0) + (parsed.cashAmount > 0 ? Number(approveSyariahData.adminFee) : 0);
     const totalAmount = principal + totalMargin;
     
-    const existingActiveLoan = safeLoans.find(l => l.userId === approveLoanData.userId && l.status === 'Aktif');
+    const existingActiveLoan = safeLoans.find(l => l.userId === approveLoanData.userId && l.status === 'Aktif' && l.type !== 'Tagihan Simpanan Wajib');
     const calculatedNetDisburse = existingActiveLoan ? (principal - Number(existingActiveLoan.remainingAmount)) : principal;
     const displayDesc = (parsed.itemPrice > 0 ? parsed.itemName : '') + (parsed.cashAmount > 0 ? (parsed.itemPrice > 0 ? ' + ' : '') + 'Pinjaman Tunai' : '');
 
@@ -460,40 +461,28 @@ function MainApp() {
 
     try {
       if (existingActiveLoan) {
-        // Optimistic Update for Top Up
-        setLoans(prev => prev.filter(l => l.id !== existingActiveLoan.id).concat(updatedLoan));
         const payload = {
           oldLoanId: existingActiveLoan.id, payoffAmount: existingActiveLoan.remainingAmount, newLoan: updatedLoan, 
           trxId: generateId('TRX'), date: updatedLoan.date, userId: existingActiveLoan.userId, adminId: currentUser.id
         };
         await gasFetch('approveTopUp', payload);
-        
         if(calculatedNetDisburse > 0) {
-           const cairTrx = {
+           await gasFetch('addTransaction', {
              id: generateId('OUT'), date: updatedLoan.date, type: 'Pencairan Top-Up', amount: calculatedNetDisburse, 
              referenceId: `CAIR-${updatedLoan.id}`, userId: updatedLoan.userId, adminId: currentUser.id
-           };
-           setTransactions(prev => [...prev, cairTrx]);
-           await gasFetch('addTransaction', cairTrx);
+           });
         }
         showAlert("Top-Up Disetujui! Jurnal kas telah diperbarui otomatis.");
       } else {
-        setLoans(prev => prev.map(l => l.id === updatedLoan.id ? updatedLoan : l));
-        const pencairanTrx = {
+        await gasFetch('updateLoan', updatedLoan);
+        await gasFetch('addTransaction', {
             id: generateId('OUT'), date: updatedLoan.date, type: 'Pencairan Akad', amount: principal, 
             referenceId: `CAIR-${updatedLoan.id}`, userId: updatedLoan.userId, adminId: currentUser.id
-        };
-        setTransactions(prev => [...prev, pencairanTrx]);
-        
-        await gasFetch('updateLoan', updatedLoan);
-        await gasFetch('addTransaction', pencairanTrx);
+        });
         showAlert("Pengajuan disetujui, Akad Berjalan, dan Kas dipotong!");
       }
-      setApproveLoanData(null); 
-    } catch(err) { 
-      showAlert("Gagal memproses persetujuan!"); 
-      fetchData(); // Rollback if error
-    }
+      setApproveLoanData(null); fetchData();
+    } catch(err) { showAlert("Gagal memproses persetujuan!"); }
     setIsLoading(false);
   };
 
@@ -501,19 +490,17 @@ function MainApp() {
     showConfirm('Yakin menolak pengajuan ini? Data tidak akan bisa dikembalikan.', async () => {
         setIsLoading(true);
         const updatedLoan = { ...approveLoanData, status: 'Ditolak' };
-        setLoans(prev => prev.map(l => l.id === updatedLoan.id ? updatedLoan : l));
-        
         try {
           await gasFetch('updateLoan', updatedLoan);
           showAlert("Pengajuan telah ditolak.");
-          setApproveLoanData(null); 
-        } catch(err) { showAlert("Gagal menolak pengajuan."); fetchData(); }
+          setApproveLoanData(null); fetchData();
+        } catch(err) { showAlert("Gagal menolak pengajuan."); }
         setIsLoading(false);
     });
   };
 
   const getCreditScore = (userId) => {
-    const lunasCount = safeLoans.filter(l => l.userId === userId && l.status === 'Lunas').length;
+    const lunasCount = safeLoans.filter(l => l.userId === userId && l.status === 'Lunas' && l.type !== 'Tagihan Simpanan Wajib').length;
     let limit = 5000000; let tier = "Anggota Standar";
     if (lunasCount >= 2) { limit = 10000000; tier = "Anggota Teladan"; }
     if (lunasCount >= 5) { limit = 25000000; tier = "Anggota Prioritas"; }
@@ -527,28 +514,22 @@ function MainApp() {
       ...editingLoan, description: form.description.value,
       total: parseFloat(form.total.value), remainingAmount: parseFloat(form.remaining.value), status: form.status.value
     };
-    setLoans(prev => prev.map(l => l.id === updatedLoan.id ? updatedLoan : l));
-    
     try {
       await gasFetch('editLoan', updatedLoan);
-      showAlert("Akad berhasil diperbarui!"); setEditingLoan(null);
-    } catch(err) { showAlert("Gagal memperbarui akad."); fetchData(); }
+      showAlert("Akad berhasil diperbarui!"); fetchData(); setEditingLoan(null);
+    } catch(err) { showAlert("Gagal memperbarui akad."); }
     setIsLoading(false);
   };
 
   const handleDeleteLoan = (loanOrId) => {
     const loanId = typeof loanOrId === 'object' ? loanOrId.id : loanOrId;
     if (!loanId) return;
-    
     showConfirm('PERINGATAN: Yakin menghapus akad ini secara permanen?', async () => {
         setIsLoading(true);
-        setLoans(prev => prev.filter(l => l.id !== loanId));
         try {
           await gasFetch('deleteLoan', { id: loanId });
-          showAlert("Akad berhasil dihapus.");
-        } catch (error) {
-          showAlert("Gagal menghapus pinjaman."); fetchData();
-        } 
+          await fetchData(); showAlert("Akad berhasil dihapus.");
+        } catch (error) { showAlert("Gagal menghapus pinjaman."); } 
         setIsLoading(false);
     });
   };
@@ -572,19 +553,11 @@ function MainApp() {
           paidAmount: Number(loan.paidAmount || 0) + parsedAmount, status: newRemaining <= 0 ? 'Lunas' : 'Aktif'
         };
 
-        // Optimistic Updates
-        setTransactions(prev => [...prev, newTrx]);
-        setLoans(prev => prev.map(l => l.id === updatedLoan.id ? updatedLoan : l));
-
         try {
-          await gasFetch('addTransaction', newTrx);
           await gasFetch('updateLoan', updatedLoan);
-          showAlert("Cicilan berhasil dicatat & Sisa hutang terpotong!"); 
-          setPrintInvoice(newTrx); 
-        } catch (err) { 
-          showAlert("Gagal memproses pembayaran."); 
-          fetchData(); // Rollback if error
-        }
+          await gasFetch('addTransaction', newTrx);
+          showAlert("Cicilan berhasil dicatat & Sisa hutang terpotong!"); setPrintInvoice(newTrx); fetchData(); 
+        } catch (err) { showAlert("Gagal memproses pembayaran."); }
         setIsLoading(false);
     });
   };
@@ -596,12 +569,10 @@ function MainApp() {
       id: generateId('TRX'), date: form.date.value, type: form.type.value, amount: parseFloat(form.amount.value),
       referenceId: form.description.value, userId: 'Internal', adminId: currentUser.id
     };
-    
-    setTransactions(prev => [...prev, newTrx]);
     try {
       await gasFetch('addTransaction', newTrx);
-      showAlert("Transaksi Kas Berhasil Dicatat!"); setShowTrxModal(false);
-    } catch (err) { fetchData(); }
+      showAlert("Transaksi Kas Berhasil Dicatat!"); fetchData(); setShowTrxModal(false);
+    } catch (err) {}
     setIsLoading(false);
   };
 
@@ -623,7 +594,9 @@ function MainApp() {
           <h2 className="text-2xl font-black text-center text-slate-800 mb-6">Sistem Koperasi</h2>
           <input name="username" placeholder="Username / ID" required className="w-full mb-4 px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500" />
           <input name="password" type="password" placeholder="Password" required className="w-full mb-6 px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500" />
-          <button type="submit" disabled={isLoading} className="w-full bg-emerald-600 text-white py-3 rounded-lg font-bold text-lg hover:bg-emerald-700 transition">{isLoading ? 'Menghubungkan...' : 'Masuk'}</button>
+          <button type="submit" disabled={isLoading} className="w-full bg-emerald-600 text-white py-3 rounded-lg font-bold text-lg hover:bg-emerald-700 transition">
+              {isLoading ? 'Menghubungkan...' : 'Masuk'}
+          </button>
           <div className="text-center mt-6 pt-4 border-t border-slate-100">
             <p className="text-xs text-slate-400 font-bold">&copy; {new Date().getFullYear()} Permana Corp.</p>
           </div>
@@ -654,15 +627,15 @@ function MainApp() {
           <div className="flex justify-between border-b pb-2"><span>No. Referensi:</span> <b>{printInvoice.id}</b></div>
           <div className="flex justify-between border-b pb-2"><span>Tanggal:</span> <b>{printInvoice.date}</b></div>
           <div className="flex justify-between border-b pb-2"><span>Terima Dari:</span> <b>{memberRef?.name || 'Umum'}</b></div>
-          <div className="flex justify-between border-b pb-2"><span>Referensi:</span> <b>{printInvoice.referenceId}</b></div>
+          <div className="flex justify-between border-b pb-2"><span>ID Referensi:</span> <b>{printInvoice.referenceId}</b></div>
           <div className="flex justify-between text-xl mt-6 pt-4 border-t-2 border-slate-800">
             <span className="font-bold">Total Diterima:</span> <b className="text-emerald-700">{formatRp(printInvoice.amount)}</b>
           </div>
-          {loanRef && <div className="text-right mt-2 text-xs text-red-600">Sisa Tagihan Akad: {formatRp(loanRef.remainingAmount)}</div>}
+          {loanRef && <div className="text-right mt-2 text-xs text-red-600">Sisa Tunggakan: {formatRp(loanRef.remainingAmount)}</div>}
         </div>
         <div className="no-print space-y-4">
           <button onClick={() => window.print()} className="w-full flex items-center justify-center gap-2 bg-emerald-600 text-white py-4 rounded-xl font-bold text-lg"><Printer/> Cetak Struk</button>
-          <button onClick={() => setPrintInvoice(null)} className="w-full bg-slate-100 text-slate-600 py-3 rounded-xl font-bold">Kembali</button>
+          <button onClick={() => setPrintInvoice(null)} className="w-full bg-slate-100 text-slate-600 py-3 rounded-xl font-bold">Tutup</button>
         </div>
       </div>
     );
@@ -731,13 +704,13 @@ function MainApp() {
              </h2>
           </div>
           <button onClick={fetchData} className="px-3 md:px-4 py-2 bg-slate-100 rounded-lg text-xs md:text-sm font-bold text-slate-600 hover:bg-slate-200 flex gap-2 items-center">
-            {isLoading ? '🔄 Memproses...' : '🔄 Sinkron Manual'}
+            {isLoading ? '🔄 Sedang...' : '🔄 Sinkron'}
           </button>
         </div>
 
         <div className="p-4 md:p-8">
             
-            {}
+            {/* ADMIN DASHBOARD */}
             {currentView === 'dashboard' && currentUser.role === 'admin' && (
               <div className="space-y-6">
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
@@ -812,7 +785,7 @@ function MainApp() {
                  </div>
 
                  <div className="overflow-x-auto w-full relative">
-                    <table className="w-full text-left text-sm whitespace-nowrap min-w-[700px]">
+                    <table className="w-full text-left text-sm min-w-[700px]">
                        <thead className="bg-slate-50 text-slate-500 text-xs uppercase border-b border-slate-200">
                           <tr>
                             <th className="p-4 font-bold border-r border-slate-200">Nama Anggota</th>
@@ -823,10 +796,14 @@ function MainApp() {
                        </thead>
                        <tbody className="divide-y divide-slate-100">
                          {safeUsers.filter(u => u.role === 'member').map(user => {
-                            const data = getMemberSavingsData(user.id, savingsYear);
+                            const ledger = getSavingsLedger(user.id, savingsYear);
+                            const isNoTagihan = !ledger.savingsLoan;
+                            const arrears = isNoTagihan ? ledger.expectedAmount : ledger.savingsLoan.remainingAmount;
+                            const isLunas = !isNoTagihan && arrears <= 0;
+                            const unpaidNames = getUnpaidMonthsNames(ledger);
                             
-                            const waMessage = data.arrearsAmount > 0 
-                              ? encodeURIComponent(`Halo ${user.name},\n\nMengingatkan bahwa Anda memiliki tunggakan Simpanan Wajib (Koperasi MBS) sebesar *${formatRp(data.arrearsAmount)}*.\n\nDetail Bulan Belum Bayar (${savingsYear}):\n- ${data.unpaidMonthsNames.join('\n- ')}\n\nMohon untuk segera melakukan pembayaran. Terima kasih.`)
+                            const waMessage = arrears > 0 
+                              ? encodeURIComponent(`Halo ${user.name},\n\nMengingatkan bahwa Anda memiliki tunggakan Simpanan Wajib (Koperasi MBS) berjalan sebesar *${formatRp(arrears)}*.\n\nBulan tertunggak:\n- ${unpaidNames.join('\n- ')}\n\nMohon untuk segera melakukan pembayaran. Terima kasih.`)
                               : encodeURIComponent(`Halo ${user.name},\n\nTerima kasih banyak! Pembayaran Simpanan Wajib Anda telah kami terima. Saat ini Anda *Bebas Tunggakan*.\n\nSemoga berkah selalu.`);
 
                             return (
@@ -837,22 +814,29 @@ function MainApp() {
                                   </td>
                                   
                                   <td className="p-4 text-center border-r border-slate-200 bg-slate-50/50">
-                                     <span className={`font-black block text-sm ${data.arrearsAmount > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
-                                       {data.arrearsAmount > 0 ? formatRp(data.arrearsAmount) : 'LUNAS'}
-                                     </span>
-                                     {user.phone && (
-                                        <a href={`https://wa.me/${user.phone}?text=${waMessage}`} target="_blank" rel="noopener noreferrer" className={`mt-2 mx-auto w-fit flex items-center justify-center gap-1 text-white text-[10px] py-1.5 px-3 rounded-full transition font-bold shadow-sm ${data.arrearsAmount > 0 ? 'bg-amber-500 hover:bg-amber-600' : 'bg-emerald-500 hover:bg-emerald-600'}`}>
-                                           <MessageCircle className="w-3 h-3"/> {data.arrearsAmount > 0 ? 'Tagih WA' : 'Kirim Struk WA'}
+                                     {isNoTagihan ? (
+                                        <span className="font-bold block text-sm text-amber-600">Menunggu Aktivasi</span>
+                                     ) : isLunas ? (
+                                        <span className="font-black block text-sm text-emerald-600">LUNAS</span>
+                                     ) : (
+                                        <span className="font-black block text-sm text-red-600">{formatRp(arrears)}</span>
+                                     )}
+
+                                     {user.phone && !isNoTagihan && (
+                                        <a href={`https://wa.me/${user.phone}?text=${waMessage}`} target="_blank" rel="noopener noreferrer" className={`mt-2 mx-auto w-fit flex items-center justify-center gap-1 text-white text-[10px] py-1.5 px-3 rounded-full transition font-bold shadow-sm ${arrears > 0 ? 'bg-amber-500 hover:bg-amber-600' : 'bg-emerald-500 hover:bg-emerald-600'}`}>
+                                           <MessageCircle className="w-3 h-3"/> {arrears > 0 ? 'Tagih WA' : 'Struk WA'}
                                         </a>
                                      )}
                                   </td>
 
                                   <td className="p-4 border-r border-slate-200 whitespace-normal">
                                      <div className="flex flex-wrap gap-1.5">
-                                         {data.unpaidMonthsNames.length === 0 ? (
-                                            <span className="text-emerald-500 font-bold text-xs flex items-center gap-1"><CheckCircle className="w-4 h-4"/> Tidak ada tunggakan.</span>
+                                         {isNoTagihan ? (
+                                            <span className="text-amber-500 font-bold text-xs flex items-center gap-1"><AlertCircle className="w-4 h-4"/> Klik aksi untuk membuat tagihan sistem.</span>
+                                         ) : isLunas ? (
+                                            <span className="text-emerald-500 font-bold text-xs flex items-center gap-1"><CheckCircle className="w-4 h-4"/> Lunas semua bulan.</span>
                                          ) : (
-                                            data.unpaidMonthsNames.map(m => (
+                                            unpaidNames.map(m => (
                                               <span key={m} className="bg-red-50 text-red-600 border border-red-200 px-2.5 py-1 rounded-md text-[10px] font-bold shadow-sm">{m}</span>
                                             ))
                                          )}
@@ -860,11 +844,8 @@ function MainApp() {
                                   </td>
 
                                   <td className="p-4 text-right">
-                                      <button 
-                                          onClick={() => setSelectedSavingsUser(user)}
-                                          className="px-4 py-2.5 rounded-lg text-xs font-bold whitespace-nowrap shadow-sm transition bg-slate-900 hover:bg-slate-800 text-white"
-                                      >
-                                          Lihat & Bayar
+                                      <button onClick={() => setSelectedSavingsUser(user)} className="px-4 py-2.5 rounded-lg text-xs font-bold whitespace-nowrap shadow-sm transition bg-slate-900 hover:bg-slate-800 text-white">
+                                          {isNoTagihan ? 'Aktifkan' : 'Lihat & Bayar'}
                                       </button>
                                   </td>
                                </tr>
@@ -951,7 +932,7 @@ function MainApp() {
                  </div>
 
                  <div className="lg:col-span-2 space-y-6 md:space-y-8 overflow-hidden w-full">
-                    {safeLoans.filter(l => l.status === 'Pending').length > 0 && (
+                    {safeLoans.filter(l => l.status === 'Pending' && l.type !== 'Tagihan Simpanan Wajib').length > 0 && (
                       <div className="bg-white rounded-2xl shadow-sm border-2 border-amber-200 overflow-hidden">
                         <div className="bg-amber-50 p-4 md:p-5 flex items-center justify-between border-b border-amber-200">
                           <h3 className="font-bold text-amber-800 flex items-center gap-2"><Clock className="w-5 h-5"/> Menunggu Evaluasi</h3>
@@ -959,7 +940,7 @@ function MainApp() {
                         <div className="overflow-x-auto w-full">
                             <table className="w-full text-left text-sm min-w-[400px]">
                               <tbody className="divide-y divide-slate-100">
-                                {safeLoans.filter(l => l.status === 'Pending').map(loan => {
+                                {safeLoans.filter(l => l.status === 'Pending' && l.type !== 'Tagihan Simpanan Wajib').map(loan => {
                                   const parsed = parseSyariahDescription(loan.description);
                                   const displayTitle = parsed ? ((parsed.itemPrice > 0 ? parsed.itemName : '') + (parsed.cashAmount > 0 ? (parsed.itemPrice > 0 ? ' + ' : '') + 'Tunai' : '')) : loan.description;
                                   
@@ -991,7 +972,8 @@ function MainApp() {
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-50">
-                              {safeLoans.filter(l => l.status !== 'Pending').map(loan => (
+                              {/* Sembunyikan Tagihan Simpanan Wajib dari list Akad agar rapi */}
+                              {safeLoans.filter(l => l.status !== 'Pending' && l.type !== 'Tagihan Simpanan Wajib').map(loan => (
                                 <tr key={loan.id} className="hover:bg-slate-50 group">
                                   <td className="p-4 md:p-5">
                                     <p className="font-bold text-slate-800 text-base">{safeUsers.find(u => u.id == loan.userId)?.name || loan.userId}</p>
@@ -1159,13 +1141,16 @@ function MainApp() {
               </div>
             )}
 
-            {}
             {currentView === 'dashboard' && currentUser.role === 'member' && (
               <div className="space-y-6 md:space-y-8">
                 {(() => {
                   const score = getCreditScore(currentUser.id);
-                  const activeLoan = safeLoans.find(l => l.userId === currentUser.id && l.status === 'Aktif');
-                  const savingsData = getMemberSavingsData(currentUser.id, new Date().getFullYear());
+                  const activeLoan = safeLoans.find(l => l.userId === currentUser.id && l.status === 'Aktif' && l.type !== 'Tagihan Simpanan Wajib');
+                  
+                  // Hitung status simpanan menggunakan ledger rahasia
+                  const ledger = getSavingsLedger(currentUser.id, new Date().getFullYear());
+                  const monthsPaidCount = Math.floor((ledger.savingsLoan?.paidAmount || 0) / SIMPANAN_WAJIB_PER_BULAN);
+                  
                   return (
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
                       
@@ -1184,34 +1169,32 @@ function MainApp() {
                          
                          <div className="mb-4">
                            <p className="text-[10px] uppercase font-bold text-slate-400">Total Terkumpul</p>
-                           <p className="text-xl md:text-2xl font-black text-blue-600 truncate">{formatRp(savingsData.totalPaidAllTime)}</p>
+                           <p className="text-xl md:text-2xl font-black text-blue-600 truncate">{formatRp(ledger.totalPaidAllTime)}</p>
                          </div>
                          
                          <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
-                           <p className="text-[10px] md:text-xs font-bold text-slate-500 mb-2">Status Simpanan Wajib ({new Date().getFullYear()})</p>
+                           <p className="text-[10px] md:text-xs font-bold text-slate-500 mb-2">Status Pembayaran ({new Date().getFullYear()})</p>
                            <div className="grid grid-cols-4 md:grid-cols-6 gap-2 mb-3">
                              {['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Ags','Sep','Okt','Nov','Des'].map((m, i) => {
                                  let statusStyle = "bg-slate-200 text-slate-400"; 
-                                 if (i >= savingsData.expectedInfo.start && i <= savingsData.expectedInfo.end) {
-                                     statusStyle = savingsData.paidArray[i] ? "bg-emerald-100 text-emerald-700 border border-emerald-200" : "bg-red-100 text-red-700 border border-red-200";
-                                 } else if (savingsData.paidArray[i]) {
-                                     statusStyle = "bg-emerald-100 text-emerald-700 border border-emerald-200"; 
+                                 if (i >= ledger.expected.start && i <= ledger.expected.end) {
+                                     const relativeMonthIndex = i - ledger.expected.start;
+                                     if (ledger.savingsLoan && relativeMonthIndex < monthsPaidCount) {
+                                         statusStyle = "bg-emerald-100 text-emerald-700 border border-emerald-200"; 
+                                     } else {
+                                         statusStyle = "bg-red-100 text-red-700 border border-red-200";
+                                     }
                                  }
-                                 return (
-                                     <div key={m} className={`text-center p-1 md:p-1.5 rounded-md text-[10px] font-bold ${statusStyle}`}>
-                                         {m}
-                                     </div>
-                                 )
+                                 return ( <div key={m} className={`text-center p-1 md:p-1.5 rounded-md text-[10px] font-bold ${statusStyle}`}>{m}</div> )
                              })}
                            </div>
                            
-                           {savingsData.arrearsAmount > 0 ? (
-                             <div>
-                               <span className="text-red-500 font-bold text-xs md:text-sm">Tunggakan: {formatRp(savingsData.arrearsAmount)}</span>
-                               <p className="text-[10px] text-slate-500 mt-1 leading-tight">Belum bayar bulan: {savingsData.unpaidMonthsNames.join(', ')}</p>
-                             </div>
+                           {!ledger.savingsLoan ? (
+                               <span className="text-amber-500 font-bold text-xs md:text-sm flex items-center gap-1"><AlertCircle className="w-4 h-4"/> Tagihan belum dirilis</span>
+                           ) : ledger.savingsLoan.remainingAmount > 0 ? (
+                               <span className="text-red-500 font-bold text-xs md:text-sm">Tunggakan: {formatRp(ledger.savingsLoan.remainingAmount)}</span>
                            ) : (
-                             <span className="text-emerald-500 font-bold text-xs md:text-sm flex items-center gap-1"><CheckCircle className="w-4 h-4"/> Bebas Tunggakan</span>
+                               <span className="text-emerald-500 font-bold text-xs md:text-sm flex items-center gap-1"><CheckCircle className="w-4 h-4"/> Lunas Tahun Ini</span>
                            )}
                          </div>
                       </div>
@@ -1252,12 +1235,12 @@ function MainApp() {
                   );
                 })()}
 
-                {/* RIWAYAT PINJAMAN */}
+                {/* RIWAYAT PINJAMAN MEMBER */}
                 <div>
                   <h2 className="text-xl font-black text-slate-800 mb-4 md:mb-6">Riwayat & Tagihan Anda</h2>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
-                     {safeLoans.filter(l => l.userId == currentUser.id).length === 0 && <div className="text-slate-400 font-medium">Belum ada riwayat tagihan.</div>}
-                     {safeLoans.filter(l => l.userId == currentUser.id).map(loan => {
+                     {safeLoans.filter(l => l.userId == currentUser.id && l.type !== 'Tagihan Simpanan Wajib').length === 0 && <div className="text-slate-400 font-medium">Belum ada riwayat tagihan.</div>}
+                     {safeLoans.filter(l => l.userId == currentUser.id && l.type !== 'Tagihan Simpanan Wajib').map(loan => {
                        const parsed = parseSyariahDescription(loan.description);
                        const displayTitle = parsed ? ((parsed.itemPrice > 0 ? parsed.itemName : '') + (parsed.cashAmount > 0 ? (parsed.itemPrice > 0 ? ' + ' : '') + 'Tunai' : '')) : loan.description;
 
@@ -1276,7 +1259,7 @@ function MainApp() {
                            
                            {loan.status === 'Pending' && (
                               (() => {
-                                const activeL = safeLoans.find(l => l.userId === loan.userId && l.status === 'Aktif' && l.id !== loan.id);
+                                const activeL = safeLoans.find(l => l.userId === loan.userId && l.status === 'Aktif' && l.id !== loan.id && l.type !== 'Tagihan Simpanan Wajib');
                                 const oldD = activeL ? Number(activeL.remainingAmount) : 0;
                                 const estCair = loan.principal - oldD;
                                 return (
@@ -1330,7 +1313,6 @@ function MainApp() {
         </div>
       </main>
 
-      {}
       {selectedSavingsUser && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
           <div className="bg-white rounded-3xl w-full max-w-md overflow-hidden shadow-2xl flex flex-col max-h-[95vh]">
@@ -1342,75 +1324,69 @@ function MainApp() {
               <button onClick={() => setSelectedSavingsUser(null)} className="text-slate-400 hover:text-red-500 bg-slate-200/50 p-2 rounded-full"><X className="w-5 h-5"/></button>
             </div>
             
-            <div className="p-5 overflow-y-auto bg-slate-50">
+            <div className="p-5 overflow-y-auto bg-white flex-1">
                {(() => {
-                  const sData = getMemberSavingsData(selectedSavingsUser.id, savingsYear);
-                  const monthNames = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
+                  const ledger = getSavingsLedger(selectedSavingsUser.id, savingsYear);
                   
-                  let arrearsList = [];
-                  let paidList = [];
+                  if (!ledger.savingsLoan) {
+                      return (
+                          <div className="py-6 text-center">
+                              <AlertCircle className="w-14 h-14 text-amber-500 mx-auto mb-4" />
+                              <h3 className="font-black text-xl mb-2 text-slate-800">Tagihan Belum Dibuat</h3>
+                              <p className="text-sm text-slate-500 mb-8 px-4">Sistem belum merekam tagihan untuk anggota ini di tahun berjalan. Tekan tombol di bawah untuk membangkitkan sistem hutang/ledger simpanan selama setahun penuh secara otomatis.</p>
+                              <button onClick={() => handleActivateSavings(ledger)} className="bg-slate-900 text-white px-6 py-3 rounded-xl font-bold w-full hover:bg-slate-800 shadow-xl transition">
+                                  Aktifkan Tagihan Tahunan ({formatRp(ledger.expectedAmount)})
+                              </button>
+                          </div>
+                      );
+                  }
 
-                  monthNames.forEach((m, i) => {
-                      const isExpected = i >= sData.expectedInfo.start && i <= sData.expectedInfo.end;
-                      const isPaid = sData.paidArray[i];
-
-                      if (isExpected) {
-                          if (isPaid) paidList.push({ name: m, index: i });
-                          else arrearsList.push({ name: m, index: i });
-                      }
-                  });
-
+                  const loan = ledger.savingsLoan;
                   return (
-                    <div>
-                        {/* DAFTAR TUNGGAKAN - Paling Atas */}
-                        <h4 className="font-bold text-red-600 mb-3 flex items-center gap-2 border-b border-red-200 pb-2">
-                           <AlertCircle className="w-5 h-5"/> Daftar Tunggakan ({savingsYear})
-                        </h4>
-                        <div className="space-y-3 mb-8">
-                            {arrearsList.length === 0 ? (
-                               <p className="text-sm text-slate-500 bg-white p-4 rounded-xl border border-slate-200 shadow-sm text-center">Bebas dari tunggakan simpanan.</p>
-                            ) : (
-                               arrearsList.map(month => (
-                                  <div key={month.index} className="flex justify-between items-center p-4 bg-white border border-red-200 rounded-xl shadow-sm hover:border-red-400 transition">
-                                      <div>
-                                          <p className="font-bold text-slate-800">Bulan {month.name}</p>
-                                          <p className="text-xs font-bold text-red-500">{formatRp(SIMPANAN_WAJIB_PER_BULAN)}</p>
-                                      </div>
-                                      <button 
-                                         onClick={() => handlePaySpecificMonth(selectedSavingsUser, savingsYear, month.index)} 
-                                         className="bg-slate-900 text-white px-5 py-2.5 rounded-lg text-xs font-bold hover:bg-slate-800 shadow-md">
-                                         Terima Dana
-                                      </button>
-                                  </div>
-                               ))
-                            )}
-                        </div>
+                      <div className="space-y-4">
+                          <div className="bg-slate-50 p-5 rounded-2xl border border-slate-200 flex justify-between shadow-inner">
+                              <div><p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-1">Total {savingsYear}</p><p className="font-black text-lg text-slate-800">{formatRp(loan.total)}</p></div>
+                              <div className="text-right"><p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-1">Sudah Dibayar</p><p className="font-black text-lg text-emerald-600">{formatRp(loan.paidAmount)}</p></div>
+                          </div>
+                          
+                          <div className="text-center py-6">
+                              <p className="text-sm font-bold text-slate-400 uppercase tracking-widest mb-2">SISA TUNGGAKAN BERJALAN</p>
+                              <p className={`text-5xl font-black tracking-tighter ${loan.remainingAmount > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                                  {formatRp(loan.remainingAmount)}
+                              </p>
+                              {loan.remainingAmount > 0 && (
+                                 <div className="flex flex-wrap justify-center gap-1.5 mt-4">
+                                     {getUnpaidMonthsNames(ledger).map(m => (
+                                         <span key={m} className="bg-red-50 text-red-600 border border-red-200 px-2 py-1 rounded text-[10px] font-bold shadow-sm">{m}</span>
+                                     ))}
+                                 </div>
+                              )}
+                          </div>
 
-                        {/* DAFTAR SUDAH DIBAYAR */}
-                        <h4 className="font-bold text-emerald-600 mb-3 flex items-center gap-2 border-b border-emerald-200 pb-2">
-                           <CheckCircle className="w-5 h-5"/> Sudah Lunas ({savingsYear})
-                        </h4>
-                        <div className="space-y-2">
-                            {paidList.length === 0 ? (
-                               <p className="text-sm text-slate-500 bg-white p-4 rounded-xl border border-slate-200 shadow-sm text-center">Belum ada pembayaran.</p>
-                            ) : (
-                               paidList.map(month => (
-                                  <div key={month.index} className="flex justify-between items-center p-3 bg-emerald-50 border border-emerald-100 rounded-xl">
-                                      <span className="font-bold text-emerald-800 text-sm">Bulan {month.name}</span>
-                                      <span className="text-[10px] font-bold text-emerald-600 bg-emerald-200 px-2 py-1 rounded">LUNAS</span>
-                                  </div>
-                               ))
-                            )}
-                        </div>
-                    </div>
-                  )
+                          {loan.remainingAmount > 0 ? (
+                              <div className="space-y-3 pt-4 border-t border-slate-100">
+                                  <button onClick={() => handlePaySavings(loan, SIMPANAN_WAJIB_PER_BULAN)} className="w-full bg-slate-900 text-white font-bold py-4 rounded-xl hover:bg-slate-800 shadow-lg transition flex items-center justify-center gap-2">
+                                      Terima 1 Bulan ({formatRp(SIMPANAN_WAJIB_PER_BULAN)})
+                                  </button>
+                                  <button onClick={() => handlePaySavings(loan, loan.remainingAmount)} className="w-full bg-emerald-600 text-white font-bold py-4 rounded-xl hover:bg-emerald-700 shadow-md transition flex items-center justify-center gap-2">
+                                      Lunasi Semua ({formatRp(loan.remainingAmount)})
+                                  </button>
+                              </div>
+                          ) : (
+                              <div className="bg-emerald-50 text-emerald-700 border border-emerald-200 p-5 rounded-2xl text-center shadow-sm">
+                                  <CheckCircle className="w-10 h-10 mx-auto mb-2 text-emerald-500" />
+                                  <h4 className="font-black text-lg mb-1">Anggota Ini Bebas Tunggakan</h4>
+                                  <p className="text-xs font-bold">Seluruh simpanan wajib tahun {savingsYear} telah lunas!</p>
+                              </div>
+                          )}
+                      </div>
+                  );
                })()}
             </div>
           </div>
         </div>
       )}
       
-      {}
       {/* MODAL JURNAL MANUAL */}
       {showTrxModal && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
@@ -1502,7 +1478,7 @@ function MainApp() {
             <form onSubmit={handleProcessApproval} className="p-5 md:p-6 space-y-4 bg-slate-50 overflow-y-auto flex-1">
               
               {(() => {
-                const pUserActiveLoan = safeLoans.find(l => l.userId === approveLoanData.userId && l.status === 'Aktif');
+                const pUserActiveLoan = safeLoans.find(l => l.userId === approveLoanData.userId && l.status === 'Aktif' && l.type !== 'Tagihan Simpanan Wajib');
                 const oldDebt = pUserActiveLoan ? Number(pUserActiveLoan.remainingAmount) : 0;
                 const parsed = parseSyariahDescription(approveLoanData.description) || { itemPrice: approveLoanData.principal, cashAmount: 0 };
                 const pengajuan = parsed.itemPrice + parsed.cashAmount;
